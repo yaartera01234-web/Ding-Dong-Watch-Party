@@ -133,7 +133,7 @@ object Preferences {
     val GESTURES = Pref("misc_gestures", true)
 
     /** Whether the room follows the device's rotation instead of being held in landscape. */
-    val ROOM_ALLOW_PORTRAIT = Pref("pref_room_allow_portrait", false) {
+    val ROOM_ALLOW_PORTRAIT = Pref("pref_room_allow_portrait", true) {
         title = { it.settingRoomPortraitTitle }
         summary = { it.settingRoomPortraitSummary }
         icon = Icons.Filled.ScreenRotation

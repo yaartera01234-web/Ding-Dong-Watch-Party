@@ -89,12 +89,22 @@ fun RoomFrame(
         }
         if (chat != null) {
             Box(
-                Modifier.align(Alignment.TopStart).focusGroup()
-                    .then(if (tall) Modifier.fillMaxWidth() else Modifier.fillMaxWidth(0.36f))
-                    .fillMaxHeight()
-                    .windowInsetsPadding(topInsets)
-                    .padding(top = if (tall) Space.row + Space.gap else Space.gapTight, bottom = transport)
-                    .windowInsetsPadding(bottomInsets),
+                Modifier.focusGroup()
+                    .then(
+                        if (tall) {
+                            Modifier.align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .fillMaxHeight(0.60f)
+                                .windowInsetsPadding(bottomInsets)
+                        } else {
+                            Modifier.align(Alignment.TopStart)
+                                .fillMaxWidth(0.36f)
+                                .fillMaxHeight()
+                                .windowInsetsPadding(topInsets)
+                                .padding(top = Space.gapTight, bottom = transport)
+                                .windowInsetsPadding(bottomInsets)
+                        }
+                    ),
             ) { chat() }
         }
         if (side != null) {
@@ -114,7 +124,12 @@ fun RoomFrame(
             ) { side() }
         }
         if (bottom != null) {
-            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().focusGroup()) { bottom() }
+            Box(
+                Modifier.focusGroup().then(
+                    if (tall) Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.40f)
+                    else Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                )
+            ) { bottom() }
         }
         if (center != null) {
             Box(Modifier.align(Alignment.Center).focusGroup()) { center() }

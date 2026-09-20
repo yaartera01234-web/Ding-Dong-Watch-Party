@@ -156,33 +156,33 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 400.dp)
+                .widthIn(max = 440.dp)
                 .fillMaxWidth()
                 .padding(20.dp)
                 .verticalScroll(rememberScrollState())
                 .clip(DD.cardShape)
                 .background(DD.card)
                 .border(1.dp, DD.line.copy(alpha = 0.6f), DD.cardShape)
-                .padding(22.dp),
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // The cat on its gradient tile.
-            Box(Modifier.size(78.dp).clip(DD.tileShape).background(DD.grad), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(92.dp).clip(DD.tileShape).background(DD.grad), contentAlignment = Alignment.Center) {
                 Image(
                     painter = painterResource(Res.drawable.synkplay_fg),
                     contentDescription = null,
-                    modifier = Modifier.size(56.dp),
+                    modifier = Modifier.size(66.dp),
                 )
             }
             Spacer(Modifier.height(14.dp))
-            Text("Ding Dong Start Screen", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text("Ding Dong Start Screen", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
-            Text("Watch Party & MPV Player", color = DD.inkDim, fontSize = 11.sp)
+            Text("Watch Party & MPV Player", color = DD.inkDim, fontSize = 13.sp)
             Spacer(Modifier.height(20.dp))
 
             // Server address: a field-styled row; a tap opens the server sheet.
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Server Address", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("Server Address", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -190,10 +190,10 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
                         .background(DD.field)
                         .border(1.dp, DD.line, DD.fieldShape)
                         .clickable { serverMenu = true }
-                        .padding(horizontal = 14.dp, vertical = 13.dp),
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(serverText, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text(serverText, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
                     Text("⌄", color = DD.inkDim, fontSize = 14.sp)
                 }
                 error?.takeIf { it == JoinError.ServerChoice || it == JoinError.Address || it == JoinError.Port || it == JoinError.PortRange }?.let {
@@ -249,7 +249,7 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Ready to watch upon join", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text("Ready to watch upon join", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
                 Box(
                     Modifier
                         .size(20.dp)
@@ -269,13 +269,13 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(54.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(DD.grad)
                     .clickable { doJoin() },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(strings.connectButtonJoin, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(strings.connectButtonJoin, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
         }
 
@@ -351,23 +351,23 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
 @Composable
 private fun DDField(label: String, value: String, placeholder: String, onValueChange: (String) -> Unit) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Box(
             Modifier
                 .fillMaxWidth()
                 .clip(DD.fieldShape)
                 .background(DD.field)
                 .border(1.dp, DD.line, DD.fieldShape)
-                .padding(horizontal = 14.dp, vertical = 13.dp),
+                .padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
                 singleLine = true,
-                textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+                textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (value.isEmpty()) Text(placeholder, color = DD.inkDim, fontSize = 13.sp)
+            if (value.isEmpty()) Text(placeholder, color = DD.inkDim, fontSize = 15.sp)
         }
     }
 }

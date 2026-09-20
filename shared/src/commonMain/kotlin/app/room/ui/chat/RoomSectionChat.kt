@@ -102,19 +102,26 @@ fun RoomChatSection(modifier: Modifier) {
         /* The cutout inset and side margins go on each child, not the column, so the strip beside
          * a camera notch belongs to the row in front of it instead of the HUD dismiss underneath. */
         val cutoutInsets = WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)
+        // Portrait puts the composer under the log, like the design shot; landscape keeps it on top.
+        val container = LocalWindowInfo.current.containerSize
+        val tallChat = container.height > container.width
+
+        val composerModifier = Modifier
+            .fillMaxWidth()
+            // Tap shield first, then the insets: a fat-finger miss around the input is a no-op.
+            .pointerInput(Unit) { detectTapGestures { } }
+            .windowInsetsPadding(cutoutInsets)
+            .padding(horizontal = 8.dp)
 
         Column(modifier = modifier) {
-            ChatComposer(
-                viewmodel = viewmodel,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Tap shield first, then the insets: a fat-finger miss around the input is a no-op.
-                    .pointerInput(Unit) { detectTapGestures { } }
-                    .windowInsetsPadding(cutoutInsets)
-                    .padding(horizontal = 8.dp),
-                gifPanelVisible = gifPanelVisible,
-                isHUDVisible = isHUDVisible,
-            )
+            if (!tallChat) {
+                ChatComposer(
+                    viewmodel = viewmodel,
+                    modifier = composerModifier,
+                    gifPanelVisible = gifPanelVisible,
+                    isHUDVisible = isHUDVisible,
+                )
+            }
 
             if (gifPanelVisible) {
                 GifPanel(
@@ -137,6 +144,15 @@ fun RoomChatSection(modifier: Modifier) {
                         .onSizeChanged { size ->
                             viewmodel.uiState.chatMediaSizeDp.value = chatMediaCellSize(with(density) { size.width.toDp() }).value
                         },
+                    isHUDVisible = isHUDVisible,
+                )
+            }
+
+            if (tallChat) {
+                ChatComposer(
+                    viewmodel = viewmodel,
+                    modifier = composerModifier,
+                    gifPanelVisible = gifPanelVisible,
                     isHUDVisible = isHUDVisible,
                 )
             }

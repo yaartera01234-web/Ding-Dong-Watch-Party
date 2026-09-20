@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
@@ -137,9 +138,15 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
         LocalGlassDemand provides roomGlassDemand,
         LocalPalette provides videoPalette,
     ) {
+        // Portrait phones keep the picture as a top mini player; the chat owns the rest.
+        val videoArea = if (tall) {
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.40f)
+        } else {
+            Modifier.fillMaxSize()
+        }
         Box(Modifier.fillMaxSize()) {
             Box(Modifier.matchParentSize().glassBackdropLayer(roomHazeState)) {
-                if (!hasVideo) RoomBackgroundArtwork()
+                if (!hasVideo) Box(videoArea) { RoomBackgroundArtwork() }
 
                 val playerIsReady by viewmodel.playerManager.isPlayerReady.collectAsState()
                 if (playerIsReady) {
@@ -148,8 +155,7 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
                      * the no-video state stays invisible. */
                     val videoBackground by remember { VIDEO_BACKGROUND_COLOR.flow() }.collectAsState(initial = 0xFF000000.toInt())
                     viewmodel.player.VideoPlayer(
-                        modifier = Modifier
-                            .fillMaxSize()
+                        modifier = videoArea
                             // Reported so picture-in-picture can morph out of the picture itself
                             // instead of appearing from nowhere.
                             .onGloballyPositioned { layout ->
@@ -390,7 +396,7 @@ private fun RoomHud(
             }
             .onPreviewKeyEvent { ui.noteHudActivity(); false },
     ) {
-        if (hasVideo) {
+        if (hasVideo && !tall) {
             BlackContrastUnderlay()
             TopContrastUnderlay()
         }
