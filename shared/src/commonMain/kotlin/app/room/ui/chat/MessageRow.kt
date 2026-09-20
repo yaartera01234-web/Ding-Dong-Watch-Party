@@ -180,6 +180,7 @@ fun MessageRow(
                     modifier = Modifier.padding(start = Space.gapTight + 2.dp),
                 )
             }
+            }
         } else {
             Column(Modifier.weight(1f)) {
                 if (!grouped) {

@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import app.preferences.Preferences
 import app.preferences.set
 import androidx.compose.foundation.layout.Box
@@ -152,7 +154,7 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
                 Modifier
                     .clip(Radius.panelShape)
                     .border(Space.hair, p.rule, Radius.panelShape)
-                    .clickable { Preferences.ROOM_ALLOW_PORTRAIT.set(false) }
+                    .clickable { viewmodel.viewModelScope.launch { Preferences.ROOM_ALLOW_PORTRAIT.set(false) } }
                     .padding(horizontal = Space.gap, vertical = 3.dp),
             ) {
                 Text("Fullscreen ⛶", style = Type.value, color = p.ink)
