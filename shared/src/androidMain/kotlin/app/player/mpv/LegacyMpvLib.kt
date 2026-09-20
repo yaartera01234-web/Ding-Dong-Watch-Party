@@ -76,8 +76,8 @@ object MPVLib {
             override fun eventProperty(property: String, value: Boolean) = observer.eventProperty(property, value)
             override fun eventProperty(property: String, value: String) = observer.eventProperty(property, value)
             override fun eventProperty(property: String, value: Double) = observer.eventProperty(property, value)
-            override fun eventProperty(property: String, value: MPVNode?) = Unit
-            override fun event(eventId: Int, node: MPVNode?) = observer.event(eventId)
+            override fun eventProperty(property: String, value: MPVNode) = Unit
+            override fun event(eventId: Int, node: MPVNode) = observer.event(eventId)
         }
         wrappers[observer] = wrapped
         mpv.addObserver(wrapped)
