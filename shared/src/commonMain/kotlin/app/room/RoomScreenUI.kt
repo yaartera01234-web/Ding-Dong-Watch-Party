@@ -214,9 +214,10 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
         // someone in it, and only opens if this session has not seen a room yet.
         val firstRoom = remember { !globalViewmodel.hasEnteredRoomOnce }
         val roster by viewmodel.session.userList.collectAsState()
-        LaunchedEffect(firstRoom, soloMode, roster.isNotEmpty()) {
+        LaunchedEffect(firstRoom, soloMode, roster.isNotEmpty(), tall) {
             globalViewmodel.hasEnteredRoomOnce = true
-            if (!firstRoom || soloMode || roster.isEmpty()) return@LaunchedEffect
+            // Portrait keeps its clean mini look; the roster pops only in landscape.
+            if (!firstRoom || soloMode || roster.isEmpty() || tall) return@LaunchedEffect
             viewmodel.uiState.toggleUserInfo(true)
         }
     }
@@ -411,7 +412,7 @@ private fun RoomHud(
             // Room creation waits for the previous engine's teardown. Until it publishes
             // the new player, keep chat/navigation usable but do not compose player tools.
             side = if (playerIsReady) ({ RoomSidePanels(Modifier.fillMaxSize(), tall = tall) }) else null,
-            bottom = if (playerIsReady) ({ RoomBottomBarSection(modifier = Modifier.fillMaxWidth()) }) else null,
+            bottom = if (playerIsReady && !tall) ({ RoomBottomBarSection(modifier = Modifier.fillMaxWidth()) }) else null,
             center = if (tall) {
                 { if (!playerIsReady) ProgressBar(progress = null) }
             } else {

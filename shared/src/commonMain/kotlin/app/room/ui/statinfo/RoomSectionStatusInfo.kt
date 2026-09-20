@@ -159,6 +159,17 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
             ) {
                 Text("Fullscreen ⛶", style = Type.value, color = p.ink)
             }
+        } else {
+            RowGap(Space.gapTight)
+            Box(
+                Modifier
+                    .clip(Radius.panelShape)
+                    .border(Space.hair, p.rule, Radius.panelShape)
+                    .clickable { viewmodel.viewModelScope.launch { Preferences.ROOM_ALLOW_PORTRAIT.set(true) } }
+                    .padding(horizontal = Space.gap, vertical = 3.dp),
+            ) {
+                Text("⛶ Mini", style = Type.value, color = p.ink)
+            }
         }
     }
 }

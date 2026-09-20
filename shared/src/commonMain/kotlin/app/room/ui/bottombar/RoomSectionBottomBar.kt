@@ -139,6 +139,39 @@ fun RoomBottomBarSection(modifier: Modifier) {
     }
 }
 
+/**
+ * The portrait transport, drawn inside the chat column just above the composer: the play
+ * key and the running time at the start, the gradient Add Media key at the end. Nothing
+ * reaches the top of the picture but the Fullscreen key.
+ */
+@Composable
+fun RoomPortraitBar() {
+    val viewmodel = LocalRoomViewmodel.current
+    val hasVideo by viewmodel.hasVideo.collectAsState()
+    val playing by viewmodel.playerManager.isNowPlaying.collectAsState()
+    val positionMs by viewmodel.playerManager.timeCurrentMillis.collectAsState()
+    val durationMs by viewmodel.playerManager.timeFullMillis.collectAsState()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (hasVideo) {
+            PlayPauseKey(viewmodel, playing, small = true)
+            RowGap(Space.gap)
+            Text(
+                text = "${timestampFromMillis(positionMs)} / ${timestampFromMillis(durationMs)}",
+                style = Type.value,
+                color = Color.White,
+                maxLines = 1,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        RoomMediaAddButton()
+    }
+}
+
 /** The outlined play/pause key shared by both arrangements. */
 @Composable
 private fun PlayPauseKey(viewmodel: app.room.RoomViewmodel, playing: Boolean, small: Boolean) {

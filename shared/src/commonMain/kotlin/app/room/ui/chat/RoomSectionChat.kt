@@ -149,6 +149,9 @@ fun RoomChatSection(modifier: Modifier) {
             }
 
             if (tallChat) {
+                // The portrait transport lives with the chat, at the thumb's reach:
+                // play/time and the gradient Add Media, right above the composer.
+                app.room.ui.bottombar.RoomPortraitBar()
                 ChatComposer(
                     viewmodel = viewmodel,
                     modifier = composerModifier,
