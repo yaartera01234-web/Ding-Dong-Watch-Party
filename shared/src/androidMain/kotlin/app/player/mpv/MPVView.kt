@@ -19,11 +19,12 @@ import app.preferences.Preferences.MPV_INTERPOLATION
 import app.preferences.value
 import app.utils.contextObtainer
 import app.utils.loggy
-import app.player.mpv.MPVLib.MpvFormat.MPV_FORMAT_DOUBLE
-import app.player.mpv.MPVLib.MpvFormat.MPV_FORMAT_FLAG
-import app.player.mpv.MPVLib.MpvFormat.MPV_FORMAT_INT64
-import app.player.mpv.MPVLib.MpvFormat.MPV_FORMAT_NONE
-import app.player.mpv.MPVLib.MpvFormat.MPV_FORMAT_STRING
+import io.github.yuroyami.libmpvkt.MPVLib
+import io.github.yuroyami.libmpvkt.MPVLib.MpvFormat.MPV_FORMAT_DOUBLE
+import io.github.yuroyami.libmpvkt.MPVLib.MpvFormat.MPV_FORMAT_FLAG
+import io.github.yuroyami.libmpvkt.MPVLib.MpvFormat.MPV_FORMAT_INT64
+import io.github.yuroyami.libmpvkt.MPVLib.MpvFormat.MPV_FORMAT_NONE
+import io.github.yuroyami.libmpvkt.MPVLib.MpvFormat.MPV_FORMAT_STRING
 
 /**
  * Hosts mpv's output in whichever surface the user's glass setting calls for; mpv itself only
@@ -172,8 +173,7 @@ class MPVView(context: Context, attrs: AttributeSet) : FrameLayout(context, attr
         removeAllViews()
         surfaceChild = null
 
-        // Legacy engine keeps its core alive for the process (see LegacyMpvLib.coreAlive);
-        // destroying it here would deafen the JNI event thread permanently.
+        MPVLib.destroy()
     }
 
     private fun observeProperties() {
