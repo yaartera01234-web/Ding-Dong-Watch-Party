@@ -151,11 +151,11 @@ class RoomUiStateManager(val viewmodel: RoomViewmodel) : AbstractManager(viewmod
      * room's position, so a phone in a pocket never drags the room back to where it stopped.
      */
     fun onLifecycleStop() {
+        // Ding Dong: playback carries on when the app leaves the front. The media session
+        // service holds the process with its notification, so the audio keeps running the
+        // way a music app does; the room position stays in step with everyone else.
         if (hasEnteredPipMode.value) return
         background = true
-        if (!viewmodel.playerManager.isPlayerReady.value) return
-        viewmodel.protocol.noteExpectedPlaybackState(paused = true)
-        onMainThread { viewmodel.player.pause() }
     }
 
     /** Back in front: the next server State hard-seeks us to the room and re-applies play/pause. */

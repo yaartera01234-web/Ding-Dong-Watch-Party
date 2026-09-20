@@ -48,6 +48,12 @@ android {
         signingConfigs.findByName("synkplay_keystore")?.let { config ->
             signingConfig = config
         }
+
+        // Ding Dong slim APK: every real phone is ARM; dropping the x86 / x86_64 emulator
+        // libraries roughly halves the native payload of the universal APK.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     compileOptions {
