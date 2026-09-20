@@ -1,0 +1,108 @@
+{
+  "name": "yuroyami dev",
+  "subtitle": "Making life easier with free apps",
+  "description": "My apps are always multiplatform. You can find them on Android and iOS (and some other times, even on Desktop)",
+  "iconURL": "https://avatars.githubusercontent.com/u/72363167?v=4",
+  "headerURL": "https://i.pinimg.com/736x/4e/85/eb/4e85ebe4cb616c7166f9eb7209c29719.jpg",
+  "patreonURL": "https://patreon.com/SidenaAkram?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink",
+  "website": "https://github.com/yuroyami",
+  "tintColor": "#ffd700",
+  "featuredApps": [
+    "com.yuroyami.syncplay.iosApp"
+  ],
+  "apps": [
+    {
+      "name": "Synkplay",
+      "bundleIdentifier": "com.yuroyami.syncplay.iosApp",
+      "developerName": "yuroyami",
+      "subtitle": "Watch videos with friends in sync.",
+      "localizedDescription": "an unofficial Syncplay client app for Android and iOS. Watch stuff in sync with your friends. Works well with Syncplay on PC. Fully written in Kotlin and Compose multiplatform.",
+      "iconURL": "https://raw.githubusercontent.com/yuroyami/syncplay-mobile/master/art/LOGO.png",
+      "tintColor": "#f72800",
+      "patreonURL": "https://patreon.com/SidenaAkram?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink",
+      "category": "entertainment",
+      "versions": [
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.24.0/synkplay-0.24.0-ios.ipa",
+          "size": 89476842,
+          "version": "0.24.0",
+          "buildVersion": "1000024000",
+          "date": "2026-09-06T13:58:47+00:00",
+          "localizedDescription": "\n### The new look\n\n- The whole app was redrawn: one set of controls, five text sizes, colours that come from the theme, and frosted panels over the video on devices that can draw them.\n- Home is a single form: your name, the server, the player, and Join. It fits a phone, a phone on its side, a tablet or a desktop window.\n- The room has a rail for its actions and a status line. The controls hide while the video plays and come back on a tap.\n- Settings have a search box, grouped rows, values in units people actually read, and colours you edit in place. Each player's settings sit inside the player category.\n- Themes preview as a miniature of the app, and the theme creator shows what a seed colour will do before you save.\n- Motion can be reduced from settings. A screen reader announces who is ready, connection changes and new messages.\n- Watching alone has its own row in About: tap the logo on Home.\n\n### Players\n\n- KitePlayer, a new engine written for this app on top of FFmpeg, is available on Android, iOS and desktop as an experimental choice. It has chapters, external and styled subtitles, pitch-preserved speed from 0.25x to 4x, and plays links over https.\n- Three engines per platform: ExoPlayer, mpv and KitePlayer on Android, and the system player, VLCKit and KitePlayer on iOS. VLC on Android and mpv on iOS are gone. VLCKit is the iOS default.\n- Volume can go past 100 on players that can boost (mpv, ExoPlayer, VLCKit). The device volume fills first, then the player's own gain takes over.\n- Double taps add up to one jump, and a long press shows where a seek will land before it commits.\n- When you watch alone, the app remembers where you left a file and offers to continue from there.\n- Seeking with KitePlayer lands on the exact frame in one step and is about twice as fast. Files with tens of thousands of subtitle lines no longer slow it down.\n- YouTube links work again with the updated extractor, and a friend's YouTube link in the shared playlist is accepted without any setup. SoundCloud, PeerTube, Bandcamp and media.ccc.de links work the same way on Android and desktop. iOS handles YouTube only.\n\n### Sync and playback\n\n- Fixed the phantom pause: a player stopping on its own no longer pauses the whole room.\n- The room shows when it is waiting for the video instead of looking frozen, and says who it is waiting for before playback starts.\n- Audio and subtitle picks survive a reload on every engine, and follow your preferred languages.\n- Tracks marked as accessibility captions, audio description or forced now say so in the picker.\n- When a file ends, the playlist moves on once, not once per person in the room.\n- A file that is still opening no longer drags the whole room back to the start.\n- If you load your file after the room has already started, you now sync to the room instead of sitting paused at the start.\n- A per-user time offset lets two different rips of the same film be watched together.\n- The three drift thresholds (rewind, slowdown, fast-forward) are now settings.\n- A phone coming back from the background follows the room instead of dragging it back.\n\n### Room and chat\n\n- Chat colours follow the theme, so they stay readable on a light one.\n- Chat timestamps follow your device's clock format.\n- Slash commands in the chat box: /ready, /room, /seek, /op, /users and /help.\n- Volume and brightness have their own controls, so a swipe is no longer the only way.\n- You can mute someone, and image links from other people stay hidden until you tap them.\n- The user list has a compact view and a detailed one. The detailed view shows each person's file, its length, its size and whether it matches yours.\n- A playlist change can be undone.\n- Picture in picture grows out of the video instead of popping up from nowhere.\n- The room can follow the device's rotation or stay in landscape. There is a setting for it.\n- Android: lock screen and headset controls work in the room and follow the same readiness rules as the play button.\n- On a television, the room's controls stay inside the visible area.\n- The locked screen tells you how to unlock it.\n- The room shows whether your connection is encrypted.\n- Panels look right on a light theme.\n- Buffering no longer pushes the play button around. The button rounds into a circle and its colours move until the player catches up.\n- The custom skip button sits between the two jump buttons.\n- Chat that fades in while the controls are hidden now shows at the top centre, under the notices, at a readable size. It used to sit tiny at the left edge.\n- Subtitle search and download work again, you can pick the subtitle language, and a failed search says why.\n- A bug report sent from the app says which engine, which build and which device.\n\n### Connection\n\n- Encrypted connections now check the server's certificate against the name you typed.\n- You can require encryption. A server that offers none is refused before anything is sent.\n- A dropped connection reconnects with a growing wait instead of hammering the server.\n- A handshake that never finishes gives up instead of hanging.\n- Leaving the server address empty joins the official server, as it always looked like it would.\n- The network you are on can no longer push the app's own services onto plain HTTP.\n- A pasted link is checked against the site it really points to, not the text shown in front of it.\n\n### Hosting\n\n- Hosting lives on the home screen now, under the server choice, with the address first.\n- The hosting screen and its notification use the app's language.\n- A silent client is dropped after the timeout the server already advertised.\n- An operator password works only for the room it belongs to.\n- Creating a managed room now really puts the password on your clipboard, which it has claimed to do for a long time.\n\n### Language\n\n- Change the app's language from settings, on every platform, with no restart.\n- All seven translations are complete: Arabic, German, Spanish, French, Polish, Russian and Chinese.\n- Audio and subtitle language names are shown in your own language.\n- A crash when opening settings, caused by a string defined twice, is fixed. Strings are now generated at build time and checked for duplicates.\n\n### Elsewhere\n\n- Invite links: share a room with a link, and open one to join.\n- About lists what the app is built from, and can check for a newer release.\n- Settings can be exported to a file and imported back.\n- A damaged settings file no longer crashes the app at launch. It starts on defaults and tells you.\n- Service keys are never written to the log, so a log you share carries none.\n- You can tell the GIF service to forget you between sessions.\n- Reading settings at startup no longer blocks drawing, and neither does logging.\n- Android 13 and up can theme the launcher icon.\n- Android downloads are two files now: the full universal APK and the smaller exo-only one. The per-CPU files are gone. Google Play serves each phone only what it needs.\n- The app also runs on desktop (Windows, macOS, Linux) with KitePlayer. Installers are not part of this release yet.",
+          "minOSVersion": "14.1"
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.23.0/synkplay-0.23.0-ios.ipa",
+          "size": 89785854,
+          "version": "0.23.0",
+          "buildVersion": "1000023000",
+          "date": "2026-06-13T03:04:40+00:00",
+          "localizedDescription": "Major protocol-compatibility and stability release. Fixes file-privacy hashing so sync checks match the PC client, eliminates false file-mismatch warnings, processes server messages strictly in order, hardens reconnection (no more disconnect loops in large rooms, malformed-message resilience, TLS-failure handling), enforces shared-playlist limits, lets controllers set other users' readiness, and removes leftover sync-path latency. iOS: fixes memory leaks when leaving a room.",
+          "minOSVersion": "14.0"
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.22.2/synkplay-0.22.2-ios.ipa",
+          "size": 89703561,
+          "version": "0.22.2",
+          "buildVersion": "1000022002",
+          "date": "2026-06-07T05:20:30+00:00",
+          "localizedDescription": "MPV is now available on iOS (MPVKit), bringing broad format support and libass subtitles to the default player. Also fixes a phantom duplicate-seek announcement.",
+          "minOSVersion": "14.0"
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.21.10/synkplay-0.21.10-ios.ipa",
+          "size": 85643712,
+          "version": "0.21.10",
+          "buildVersion": "1000021010",
+          "date": "2026-05-19T00:11:45+00:00",
+          "localizedDescription": "",
+          "minOSVersion": ""
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.20.0/synkplay-0.20.0-ios.ipa",
+          "size": 124527912,
+          "version": "0.20.0",
+          "buildVersion": "1000020000",
+          "date": "2026-04-13T03:24:00+00:00",
+          "localizedDescription": "",
+          "minOSVersion": ""
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.19.1/synkplay-0.19.1-ios.ipa",
+          "size": 124474619,
+          "version": "0.19.1",
+          "buildVersion": "1000019001",
+          "date": "2026-04-11T07:34:12+00:00",
+          "localizedDescription": "",
+          "minOSVersion": ""
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.18.0/synkplay-0.18.0-ios.ipa",
+          "size": 110000000,
+          "version": "0.18.0",
+          "buildVersion": "1000018000",
+          "date": "2026-03-18T13:00:00+01:00",
+          "localizedDescription": "",
+          "minOSVersion": ""
+        },
+        {
+          "downloadURL": "https://github.com/yuroyami/syncplay-mobile/releases/download/v0.17.0/syncplay-0.17.0-ios.ipa",
+          "size": 110000000,
+          "version": "0.17.0",
+          "buildVersion": "1000017000",
+          "date": "2026-03-08T13:00:00+01:00",
+          "localizedDescription": "",
+          "minOSVersion": ""
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "audio"
+        ],
+        "privacy": {}
+      },
+      "patreon": {}
+    }
+  ],
+  "news": []
+}

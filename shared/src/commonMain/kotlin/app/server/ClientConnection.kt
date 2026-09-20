@@ -1,0 +1,460 @@
+package app.server
+
+import SyncplayMobile.shared.KiteBuildConfig
+import app.protocol.ProtocolManager.Companion.SYNCPLAY_PROTOCOL_VERSION
+import app.protocol.WireMessage
+import app.protocol.WireMessageDeserializer
+import app.protocol.WireMessageHandler
+import app.protocol.models.PingService
+import app.protocol.models.RoomFeatures
+import app.protocol.syncplayJson
+import app.protocol.wire.ControllerAuthData
+import app.protocol.wire.FileData
+import app.protocol.wire.HelloData
+import app.protocol.wire.IgnoringOnTheFlyData
+import app.protocol.wire.ListUserData
+import app.protocol.wire.PingData
+import app.protocol.wire.PlaystateData
+import app.protocol.wire.ReadyData
+import app.protocol.wire.Room
+import app.protocol.wire.StateData
+import app.protocol.wire.UserEvent
+import app.protocol.wire.UserSetData
+import app.server.model.RateLimiter
+import app.server.model.ServerConfig.Companion.MAX_FILENAME_LENGTH
+import app.server.model.ServerRoom
+import app.server.model.ServerWatcher
+import app.utils.SyncClock
+import app.utils.loggy
+import kotlinx.serialization.SerializationException
+
+/**
+ * Server-side per-client protocol handler.
+ *
+ * Implements [WireMessageHandler] for inbound messages, which are typed payloads from the
+ * shared [WireMessage] hierarchy decoded by [WireMessageDeserializer]. Outbound traffic
+ * builds the same hierarchy (the client decodes it identically) and serializes via
+ * [syncplayJson], so both directions share one Kotlinx Serialization pipeline.
+ */
+class ClientConnection(
+    val server: SyncplayServer,
+    private val sendFn: (String) -> Unit,
+    private val dropFn: () -> Unit
+) : WireMessageHandler {
+
+    var watcher: ServerWatcher? = null
+    private var version: String? = null
+    private var features: RoomFeatures? = null
+
+    /**
+     * What this one connection may do per second. Griefing, not compromise, so the answer is a
+     * cap rather than anything cleverer. Both buckets start full, so an ordinary session never
+     * notices them.
+     */
+    private val chatLimiter = RateLimiter(
+        RateLimiter.CHAT_BURST, RateLimiter.CHAT_PER_SECOND, SyncClock.nowSeconds()
+    )
+    private val playlistLimiter = RateLimiter(
+        RateLimiter.PLAYLIST_BURST, RateLimiter.PLAYLIST_PER_SECOND, SyncClock.nowSeconds()
+    )
+    private var logged: Boolean = false
+    var clientIgnoringOnTheFly: Int = 0
+    var serverIgnoringOnTheFly: Int = 0
+
+    private val pingService = PingService()
+    private var clientLatencyCalculation: Double = 0.0
+    private var clientLatencyCalculationArrivalTime: Double = 0.0
+
+    val isLogged: Boolean get() = logged
+
+    fun getFeatures(): RoomFeatures? = features
+    fun getVersion(): String? = version
+
+    /**
+     * Encodes a [WireMessage] and writes it to the wire. Routes through
+     * [WireMessage.toJson] so the concrete-subclass serializer is used; encoding via the
+     * interface type would inject a `"type"` discriminator the protocol doesn't allow.
+     */
+    private fun sendTyped(message: WireMessage) {
+        sendFn(message.toJson())
+    }
+
+    /**
+     * Writes a line the caller has already encoded. A broadcast sends byte-identical JSON to
+     * every watcher, so the server encodes it once and hands the same string to each connection
+     * instead of running the serializer once per recipient.
+     */
+    fun sendEncoded(json: String) {
+        sendFn(json)
+    }
+
+    /**
+     * Set by the first drop. The mailbox behind this connection may already hold lines that
+     * arrived before the drop, and dispatching those puts a watcher back in a room the server
+     * has just thrown out of it.
+     */
+    private var dropped = false
+
+    fun dropWithError(error: String) {
+        if (dropped) return
+        dropped = true
+        loggy("Server: Dropping client - $error")
+        sendTyped(WireMessage.error(error))
+        dropFn()
+    }
+
+    /** Closes the socket with no error line, PC's plain `drop()`. */
+    fun drop() {
+        if (dropped) return
+        dropped = true
+        logged = false
+        dropFn()
+    }
+
+    fun onConnectionLost() {
+        // Called from raw transport threads (Netty/iOS); routes through the server's confined
+        // dispatcher so removeWatcher's shared-map mutation can't race the timer / inbound work.
+        server.disconnectWatcher(watcher)
+    }
+
+    /**
+     * Decodes a raw wire-JSON line via [WireMessageDeserializer] and dispatches to the
+     * matching `on…` method through [WireMessage.dispatch].
+     */
+    suspend fun handlePacket(jsonString: String) {
+        if (KiteBuildConfig.DEBUG_SYNCPLAY_PROTOCOL) loggy("**CLIENT** $jsonString")
+        // All inbound dispatch and the shared-state mutations it triggers are confined to the
+        // server's single thread, matching PC's single-reactor model.
+        server.onServerThread {
+            // Anything buffered behind a drop is not this connection's business any more.
+            if (dropped) return@onServerThread
+            try {
+                val message = syncplayJson.decodeFromString(WireMessageDeserializer, jsonString)
+                message.dispatch(this)
+            } catch (e: SerializationException) {
+                // A bounded excerpt: an unauthenticated peer must not write 64 KiB frames into the log.
+                loggy("Server: failed to decode line '${jsonString.take(LOGGED_LINE_MAX)}' — ${e.message?.take(LOGGED_LINE_MAX)}")
+                dropWithError("Failed to parse message")
+            }
+        }
+    }
+
+    // -----------------------------------------------------------
+    // WireMessageHandler — inbound dispatch (client→server only)
+    // -----------------------------------------------------------
+
+    override suspend fun onHello(message: WireMessage.Hello) {
+        val data = message.data
+        val username = data.username?.trim()
+        val roomName = data.room?.name?.trim()
+        val clientVersion = data.realversion ?: data.version
+
+        if (username.isNullOrEmpty() || roomName.isNullOrEmpty() || clientVersion == null) {
+            dropWithError("Hello command does not have enough parameters")
+            return
+        }
+        // A second Hello on a live connection would register a second watcher for one socket.
+        if (logged) {
+            dropWithError("Already logged in")
+            return
+        }
+
+        if (!checkPassword(data.password)) return
+
+        version = clientVersion
+        features = data.features
+
+        server.addWatcher(this, username, roomName)
+        logged = true
+        sendHello(clientVersion)
+    }
+
+    override suspend fun onState(message: WireMessage.State) {
+        if (!requireLogged()) return
+        val state = message.data
+
+        state.ignoringOnTheFly?.let { ignore ->
+            ignore.server?.let { srv ->
+                if (serverIgnoringOnTheFly == srv) serverIgnoringOnTheFly = 0
+            }
+            ignore.client?.let { cl -> clientIgnoringOnTheFly = cl }
+        }
+
+        // Absence stays absent: a ping-only State (no playstate) must not rewind this watcher to
+        // 0, and PC's updateState takes None for exactly that reason.
+        val playstate = state.playstate
+        val position = playstate?.position
+        val paused = playstate?.paused
+        val doSeek = playstate?.doSeek
+
+        state.ping?.let { ping ->
+            val clientRtt = ping.clientRtt ?: 0.0
+            clientLatencyCalculation = ping.clientLatencyCalculation ?: 0.0
+            clientLatencyCalculationArrivalTime = currentTimeSeconds()
+            // A missing echo is null, never 0: PingService ignores it instead of computing an RTT
+            // against the epoch.
+            pingService.receiveMessage(ping.latencyCalculation, clientRtt)
+        }
+
+        if (serverIgnoringOnTheFly == 0) {
+            watcher?.updateState(position, paused, doSeek, pingService.forwardDelay)
+        }
+    }
+
+    override suspend fun onSet(message: WireMessage.Set) {
+        if (!requireLogged()) return
+        val w = watcher ?: return
+        val set = message.data
+
+        set.room?.let { server.setWatcherRoom(w, it.name) }
+        set.file?.let { w.setFile(truncateFileName(it)) }
+        set.ready?.let { handleReady(w, it) }
+        set.controllerAuth?.let { handleControllerAuth(w, it) }
+        // A playlistChange with no files, or an index with no number, is malformed, not a wipe.
+        // Each edit reaches the whole room, so they are capped more tightly than chat.
+        if (set.playlistChange != null || set.playlistIndex != null) {
+            if (!playlistLimiter.allow(SyncClock.nowSeconds())) return
+        }
+        set.playlistChange?.files?.let { server.setPlaylist(w, it) }
+        set.playlistIndex?.index?.let { server.setPlaylistIndex(w, it) }
+        // Features must be written to the WATCHER, not just this connection's copy: List
+        // responses read the watcher's features.
+        set.features?.let {
+            features = it
+            w.features = it
+        }
+    }
+
+    override suspend fun onListRequest(message: WireMessage.ListRequest) {
+        if (!requireLogged()) return
+        sendList()
+    }
+
+    override suspend fun onChatRequest(message: WireMessage.ChatRequest) {
+        if (!requireLogged()) return
+        if (server.config.disableChat) return
+        // A peer sending chat in a loop reaches everyone in the room as fast as its socket
+        // allows. Over the cap, the message is dropped rather than broadcast; the sender is not
+        // told, because a rate limit that answers is a rate limit that can be measured.
+        if (!chatLimiter.allow(SyncClock.nowSeconds())) return
+        server.sendChat(watcher ?: return, message.message)
+    }
+
+    override suspend fun onTLS(message: WireMessage.TLS) {
+        // Mobile server has no TLS-cert support — always answers "false".
+        sendTyped(WireMessage.tlsResponse(false))
+    }
+
+    override suspend fun onError(message: WireMessage.Error) {
+        dropWithError(message.data.message ?: "Unknown error")
+    }
+
+    private fun handleReady(w: ServerWatcher, ready: ReadyData) {
+        server.setReady(
+            watcher = w,
+            isReady = ready.isReady ?: false,
+            manuallyInitiated = ready.manuallyInitiated ?: false,
+            username = ready.username
+        )
+    }
+
+    private fun handleControllerAuth(w: ServerWatcher, auth: ControllerAuthData) {
+        val password = auth.password?.takeIf { it.isNotEmpty() } ?: return
+        server.authRoomController(w, password, auth.room)
+    }
+
+    private fun checkPassword(clientPassword: String?): Boolean {
+        val serverHash = server.config.hashedPassword
+        if (serverHash.isEmpty()) return true
+
+        if (clientPassword.isNullOrEmpty()) {
+            dropWithError("Password required but not provided")
+            return false
+        }
+        if (clientPassword != serverHash) {
+            dropWithError("Wrong password supplied")
+            return false
+        }
+        return true
+    }
+
+    private fun truncateFileName(file: FileData): FileData {
+        val name = file.name ?: return file
+        if (name.length <= MAX_FILENAME_LENGTH) return file
+        return file.copy(name = name.take(MAX_FILENAME_LENGTH))
+    }
+
+    // -----------------------------------------------------------
+    // Outbound — typed [WireMessage]s encoded via [syncplayJson]
+    // -----------------------------------------------------------
+
+    fun sendHello(clientVersion: String) {
+        val w = watcher ?: return
+        val room = w.room ?: return
+
+        sendTyped(
+            WireMessage.Hello(
+                HelloData(
+                    username = w.name,
+                    room = Room(name = room.name),
+                    version = clientVersion,
+                    realversion = SYNCPLAY_PROTOCOL_VERSION,
+                    features = server.buildServerFeatures(),
+                    motd = server.config.motd
+                )
+            )
+        )
+    }
+
+    /**
+     * Writes a `State` packet to the wire, applying the same `ignoringOnTheFly` /
+     * forced-update bookkeeping as the python reference server.
+     */
+    fun sendState(
+        position: Double,
+        paused: Boolean,
+        doSeek: Boolean,
+        setBy: ServerWatcher?,
+        forced: Boolean
+    ) {
+        val processingTime = if (clientLatencyCalculationArrivalTime > 0) {
+            currentTimeSeconds() - clientLatencyCalculationArrivalTime
+        } else 0.0
+
+        if (forced) {
+            serverIgnoringOnTheFly += 1
+        }
+
+        val clientLatCalc = if (clientLatencyCalculation > 0) clientLatencyCalculation else null
+        if (clientLatencyCalculation > 0) clientLatencyCalculation = 0.0
+
+        // Feedback suppression: the per-client counter is cleared ONLY when actually carried in
+        // this outgoing message. Forced echoes that carry `client: N` clear it; non-forced ticks
+        // that send nothing leave the client's pending correction intact.
+        val ignoring = if (serverIgnoringOnTheFly != 0 || clientIgnoringOnTheFly != 0) {
+            val data = IgnoringOnTheFlyData(
+                server = serverIgnoringOnTheFly.takeIf { it != 0 },
+                client = clientIgnoringOnTheFly.takeIf { it != 0 }
+            )
+            // Client counter is zeroed at the moment it is placed in the packet.
+            if (clientIgnoringOnTheFly != 0) clientIgnoringOnTheFly = 0
+            data
+        } else null
+
+        val shouldSend = serverIgnoringOnTheFly == 0 || forced
+
+        if (shouldSend) {
+            sendTyped(
+                WireMessage.State(
+                    StateData(
+                        playstate = PlaystateData(
+                            position = position,
+                            paused = paused,
+                            doSeek = doSeek,
+                            setBy = setBy?.name
+                        ),
+                        ping = PingData(
+                            latencyCalculation = currentTimeSeconds(),
+                            serverRtt = pingService.rtt,
+                            clientLatencyCalculation = clientLatCalc?.let { it + processingTime }
+                        ),
+                        ignoringOnTheFly = ignoring
+                    )
+                )
+            )
+        }
+    }
+
+    /** Broadcasts a user state change (join/leave/file/room) in a `Set.user` envelope. */
+    fun sendUserSetting(
+        username: String,
+        room: ServerRoom?,
+        file: FileData?,
+        event: UserEvent?
+    ) {
+        sendTyped(
+            WireMessage.userBroadcast(
+                mapOf(
+                    username to UserSetData(
+                        room = room?.let { Room(it.name) },
+                        file = file,
+                        event = event
+                    )
+                )
+            )
+        )
+    }
+
+    fun sendSetReady(
+        username: String,
+        isReady: Boolean?,
+        manuallyInitiated: Boolean,
+        setByUsername: String? = null
+    ) {
+        sendTyped(
+            WireMessage.readiness(
+                isReady = isReady ?: false,
+                manuallyInitiated = manuallyInitiated,
+                username = username,
+                setBy = setByUsername
+            )
+        )
+    }
+
+    fun sendPlaylist(username: String, files: List<String>) {
+        sendTyped(WireMessage.playlistChange(files = files, user = username))
+    }
+
+    fun sendPlaylistIndex(username: String, index: Int) {
+        sendTyped(WireMessage.playlistIndex(index = index, user = username))
+    }
+
+    /** A refusal the sender can read, for a request that cannot be carried out. */
+    fun sendError(text: String) = sendTyped(WireMessage.error(text))
+
+    fun sendNewControlledRoom(roomName: String, password: String) {
+        sendTyped(WireMessage.newControlledRoom(roomName = roomName, password = password))
+    }
+
+    fun sendControlledRoomAuthStatus(success: Boolean, username: String, roomName: String) {
+        sendTyped(WireMessage.controllerAuth(user = username, room = roomName, success = success))
+    }
+
+    /** Builds the full per-room user listing in response to a `List` request. */
+    fun sendList() {
+        val w = watcher ?: return
+        val watchers = server.getAllWatchersForUser(w)
+        val grouped = watchers.filter { it.room != null }.groupBy { it.room!!.name }
+
+        val byRoom = grouped.mapValues { (_, roomWatchers) ->
+            roomWatchers.associate { wt ->
+                wt.name to ListUserData(
+                    position = wt.getPosition() ?: 0.0,
+                    isReady = wt.isReady(),
+                    file = wt.file,
+                    controller = wt.isController(),
+                    features = wt.features
+                )
+            }
+        }
+        sendTyped(WireMessage.ListResponse(rooms = byRoom))
+    }
+
+    fun sendChatMessage(senderName: String, message: String) {
+        sendTyped(WireMessage.chatBroadcast(username = senderName, message = message))
+    }
+
+    private fun requireLogged(): Boolean {
+        if (!logged) {
+            dropWithError("Not authenticated")
+            return false
+        }
+        return true
+    }
+
+    private fun currentTimeSeconds(): Double = SyncClock.nowSeconds()
+
+    private companion object {
+        const val LOGGED_LINE_MAX = 200
+    }
+}

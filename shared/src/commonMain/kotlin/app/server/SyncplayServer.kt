@@ -1,0 +1,581 @@
+package app.server
+
+import app.protocol.WireMessage
+import app.protocol.models.RoomFeatures
+import app.protocol.wire.FileData
+import app.protocol.wire.Room
+import app.protocol.wire.UserEvent
+import app.protocol.wire.UserSetData
+import app.server.model.ControlledServerRoom
+import app.server.model.NotControlledRoomException
+import app.server.model.RoomPasswordProvider
+import app.server.model.ServerConfig
+import app.server.model.ServerConfig.Companion.MAX_FILENAME_LENGTH
+import app.server.model.ServerConfig.Companion.MAX_ROOM_NAME_LENGTH
+import app.server.model.ServerConfig.Companion.SERVER_STATE_INTERVAL_MS
+import app.server.model.ServerWatcher
+import app.utils.SyncClock
+import app.utils.ioDispatcher
+import app.utils.loggy
+import app.utils.playlistIsValid
+import kotlinx.atomicfu.atomic
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+
+/**
+ * Central Syncplay server: owns rooms, watchers, state timers, and broadcasting.
+ * Independent of client-side code (RoomViewmodel, RoomCallback, etc.).
+ */
+class SyncplayServer(
+    val config: ServerConfig,
+    private val scope: CoroutineScope
+) {
+    /**
+     * Single-threaded confinement for ALL shared server state (rooms, watchers, connections,
+     * counters, positions), mirroring PC's single Twisted reactor thread. Inbound packet handling
+     * ([ClientConnection.handlePacket]), per-watcher state timers, and connection-lost cleanup all
+     * run here, so the unsynchronized [mutableMapOf] collections and plain mutable fields are never
+     * touched by two threads at once. `limitedParallelism(1)` runs at most one task at a time and
+     * establishes the happens-before edges needed for visibility.
+     */
+    val serverDispatcher: CoroutineDispatcher = ioDispatcher.limitedParallelism(1)
+
+    /** Runs [block] confined to [serverDispatcher] so it can safely touch shared state. */
+    suspend fun <T> onServerThread(block: suspend () -> T): T =
+        withContext(serverDispatcher) { block() }
+
+    private val roomManager: ServerRoomManager =
+        if (config.isolateRooms) PublicServerRoomManager() else ServerRoomManager()
+
+    /** Maps each watcher to its ClientConnection for outbound messaging. */
+    private val _connections = mutableMapOf<ServerWatcher, ClientConnection>()
+
+    /** Observable count of connected clients for UI. */
+    val connectedClients = MutableStateFlow(0)
+
+    /** Server event log for UI display. */
+    val serverLog = MutableStateFlow<List<ServerLogEntry>>(emptyList())
+
+    private var stateTimerJobs = mutableMapOf<ServerWatcher, Job>()
+
+    fun getClientConnection(watcher: ServerWatcher): ClientConnection? = _connections[watcher]
+
+    /**
+     * Whether cutting this name to the limit would destroy a managed room's hash. An ordinary
+     * name loses characters and stays itself; a managed one stops being managed.
+     */
+    private fun wouldCutAManagedName(roomName: String): Boolean =
+        roomName.length > MAX_ROOM_NAME_LENGTH && RoomPasswordProvider.isControlledRoom(roomName)
+
+    // --- Watcher lifecycle ---
+
+    fun addWatcher(connection: ClientConnection, username: String, roomName: String) {
+        if (wouldCutAManagedName(roomName)) {
+            connection.sendError("Managed room name too long")
+            return
+        }
+        val truncatedRoom = roomName.take(MAX_ROOM_NAME_LENGTH)
+        val uniqueName = roomManager.findFreeUsername(username, config.maxUsernameLength)
+        val watcher = ServerWatcher(this, uniqueName)
+        watcher.version = connection.getVersion()
+        watcher.features = connection.getFeatures()
+
+        connection.watcher = watcher
+        _connections[watcher] = connection
+
+        setWatcherRoom(watcher, truncatedRoom, asJoin = true)
+        connectedClients.value = _connections.size
+        log(ServerLogEvent.Joined(uniqueName, truncatedRoom))
+    }
+
+    fun setWatcherRoom(watcher: ServerWatcher, roomName: String, asJoin: Boolean = false) {
+        if (wouldCutAManagedName(roomName)) {
+            _connections[watcher]?.sendError("Managed room name too long")
+            return
+        }
+        val truncated = roomName.take(MAX_ROOM_NAME_LENGTH)
+        roomManager.moveWatcher(watcher, truncated)
+
+        if (asJoin) {
+            sendJoinMessage(watcher)
+        } else {
+            sendRoomSwitchMessage(watcher)
+        }
+
+        val room = watcher.room ?: return
+        val setByName = room.getSetBy()?.name
+
+        val conn = _connections[watcher] ?: return
+        conn.sendPlaylist(setByName ?: "", room.getPlaylist())
+        room.getPlaylistIndex()?.let { conn.sendPlaylistIndex(setByName ?: "", it) }
+
+        // A controlled room announces its existing controllers to the new watcher.
+        if (RoomPasswordProvider.isControlledRoom(truncated)) {
+            for (controller in room.getControllers()) {
+                conn.sendControlledRoomAuthStatus(true, controller.name, truncated)
+            }
+        }
+
+        startStateTimer(watcher)
+    }
+
+    fun removeWatcher(watcher: ServerWatcher?) {
+        if (watcher == null) return
+        /* The registration record is [_connections], not the watcher's room. Reading the room
+         * here made every line below conditional on something the room manager itself clears, so
+         * a watcher without one would keep its state timer, its connection entry and its place in
+         * the connected count. Removing from the map first is also what keeps the person leaving
+         * out of their own departure broadcast. */
+        if (_connections.remove(watcher) == null) return
+        connectedClients.value = _connections.size
+
+        stopStateTimer(watcher)
+        if (watcher.room != null) sendLeftMessage(watcher)
+        roomManager.removeWatcher(watcher)
+        authFailures.remove(watcher)
+
+        log(ServerLogEvent.Disconnected(watcher.name))
+    }
+
+    /**
+     * Connection-lost entry point for the platform network engines, which fire on raw transport
+     * threads (Netty event loop / iOS socket). Hops onto [serverDispatcher] so [removeWatcher]'s
+     * shared-map mutation is serialized with the timer and inbound handling.
+     */
+    fun disconnectWatcher(watcher: ServerWatcher?) {
+        if (watcher == null) return
+        scope.launch(serverDispatcher) { removeWatcher(watcher) }
+    }
+
+    // --- State broadcasting ---
+
+    private fun startStateTimer(watcher: ServerWatcher) {
+        stopStateTimer(watcher)
+        // Confined to serverDispatcher so ticks never race inbound packet handling on the shared
+        // room/watcher/connection state. `delay` suspends without holding the single thread.
+        stateTimerJobs[watcher] = scope.launch(serverDispatcher) {
+            // Initial forced state update, then one every SERVER_STATE_INTERVAL_MS.
+            delay(100)
+            tickState(watcher, doSeek = true, forcedUpdate = true)
+
+            while (isActive) {
+                delay(SERVER_STATE_INTERVAL_MS)
+                tickState(watcher, doSeek = false, forcedUpdate = false)
+                if (dropIfSilent(watcher)) break
+            }
+        }
+    }
+
+    /**
+     * One State tick that cannot kill its own timer.
+     *
+     * A throw out of [sendState] used to end the timer coroutine for good. The socket stayed
+     * open, State stopped flowing, and because the silence check lives in the same loop the
+     * watcher was never timed out either: an invisible member of the room, still counted, still
+     * holding a name. One bad tick is not a reason to stop.
+     */
+    private fun tickState(watcher: ServerWatcher, doSeek: Boolean, forcedUpdate: Boolean) {
+        try {
+            sendState(watcher, doSeek = doSeek, forcedUpdate = forcedUpdate)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            loggy("Server: State to ${watcher.name} failed: ${e.message}")
+        }
+    }
+
+    /**
+     * PC's Watcher.sendState tail: a client that has not sent a State for the protocol timeout is
+     * dead, whatever its socket says. Left in, a half-dead phone becomes a frozen watcher whose
+     * stale position the room adopts as its slowest and rewinds to. Returns true when dropped.
+     */
+    private fun dropIfSilent(watcher: ServerWatcher): Boolean {
+        val silentFor = ServerWatcher.currentTimeSeconds() - watcher.lastUpdatedOn
+        if (silentFor <= config.protocolTimeoutSeconds) return false
+        log(ServerLogEvent.TimedOut(watcher.name, silentFor.toInt()))
+        val conn = _connections[watcher]
+        removeWatcher(watcher)
+        conn?.drop()
+        return true
+    }
+
+    private fun stopStateTimer(watcher: ServerWatcher) {
+        stateTimerJobs.remove(watcher)?.cancel()
+    }
+
+    /** Sends the room's authoritative state to a single watcher. */
+    fun sendState(watcher: ServerWatcher, doSeek: Boolean = false, forcedUpdate: Boolean = false) {
+        val room = watcher.room ?: return
+        val conn = _connections[watcher] ?: return
+
+        if (!conn.isLogged) return
+
+        val paused = room.isPaused()
+        val position = room.getPosition()
+        val setBy = room.getSetBy()
+
+        conn.sendState(position, paused, doSeek, setBy, forcedUpdate)
+    }
+
+    /** Forces a position update to all watchers in a room after a controller's state change. */
+    fun forcePositionUpdate(watcher: ServerWatcher, doSeek: Boolean, watcherPauseState: Boolean) {
+        val room = watcher.room ?: return
+
+        if (room.canControl(watcher)) {
+            val paused = room.isPaused()
+            val position = watcher.getPosition() ?: return
+            room.setPosition(position, watcher)
+
+            roomManager.broadcastRoom(watcher) { w ->
+                _connections[w]?.sendState(position, paused, doSeek, watcher, true)
+            }
+        } else {
+            val conn = _connections[watcher] ?: return
+            // A non-controller gets its own state echoed back first, then the room's authoritative
+            // state. getPosition() mutates, so read it once: calling it twice would let the first
+            // read pick a setBy and a fresh timestamp that the "authoritative" second read inherits.
+            val roomPosition = room.getPosition()
+            conn.sendState(roomPosition, watcherPauseState, false, watcher, true)
+            conn.sendState(roomPosition, room.isPaused(), true, room.getSetBy(), true)
+        }
+    }
+
+    // --- Broadcasting messages ---
+
+    private fun sendJoinMessage(watcher: ServerWatcher) {
+        // The joined event carries version AND features so peers learn the joiner's capabilities
+        // without waiting for a List round-trip.
+        val event = UserEvent(
+            joined = JsonPrimitive(true),
+            version = watcher.version,
+            features = watcher.features
+        )
+        fanOut(watcher, roomOnly = false, userSettingMessage(watcher, null, event)) { it != watcher }
+        fanOut(watcher, roomOnly = true, readinessMessage(watcher, manuallyInitiated = false))
+    }
+
+    /**
+     * Encodes [message] once and writes the same line to every recipient.
+     *
+     * Each `send…` on [ClientConnection] builds its own payload objects and runs the serializer,
+     * so a broadcast used to do both once per watcher for JSON that is identical for all of them.
+     * A playlist edit is the worst case: the protocol allows 10000 characters, so a ten-person
+     * room re-encoded roughly a hundred kilobytes of the same string, on the one thread that
+     * serves every client.
+     */
+    private inline fun fanOut(
+        sender: ServerWatcher,
+        roomOnly: Boolean,
+        message: WireMessage,
+        crossinline include: (ServerWatcher) -> Boolean = { true },
+    ) {
+        val line = message.toJson()
+        val write: (ServerWatcher) -> Unit = { w -> if (include(w)) _connections[w]?.sendEncoded(line) }
+        if (roomOnly) roomManager.broadcastRoom(sender, write) else roomManager.broadcast(sender, write)
+    }
+
+    private fun readinessMessage(watcher: ServerWatcher, manuallyInitiated: Boolean, setBy: String? = null) =
+        WireMessage.readiness(
+            isReady = watcher.isReady() ?: false,
+            manuallyInitiated = manuallyInitiated,
+            username = watcher.name,
+            setBy = setBy,
+        )
+
+    private fun userSettingMessage(watcher: ServerWatcher, file: FileData?, event: UserEvent?) =
+        WireMessage.userBroadcast(
+            mapOf(
+                watcher.name to UserSetData(
+                    room = watcher.room?.let { Room(it.name) },
+                    file = file,
+                    event = event,
+                )
+            )
+        )
+
+    private fun sendRoomSwitchMessage(watcher: ServerWatcher) {
+        fanOut(watcher, roomOnly = false, userSettingMessage(watcher, null, null))
+        fanOut(watcher, roomOnly = true, readinessMessage(watcher, manuallyInitiated = false))
+    }
+
+    private fun sendLeftMessage(watcher: ServerWatcher) {
+        val event = UserEvent(left = JsonPrimitive(true))
+        // Not to the person leaving: their socket is already gone, and the join path has always
+        // excluded the joiner from its own announcement.
+        fanOut(watcher, roomOnly = false, userSettingMessage(watcher, null, event)) { it != watcher }
+    }
+
+    fun sendFileUpdate(watcher: ServerWatcher) {
+        val file = watcher.file ?: return
+        fanOut(watcher, roomOnly = false, userSettingMessage(watcher, file, null))
+    }
+
+    // --- Chat ---
+
+    fun sendChat(watcher: ServerWatcher, message: String) {
+        val truncated = message.take(config.maxChatMessageLength)
+        fanOut(watcher, roomOnly = true, WireMessage.chatBroadcast(username = watcher.name, message = truncated))
+    }
+
+    // --- Readiness ---
+
+    fun setReady(watcher: ServerWatcher, isReady: Boolean, manuallyInitiated: Boolean = true, username: String? = null) {
+        if (username != null && username != watcher.name) {
+            // Controller-only path: set another user's readiness.
+            val room = watcher.room ?: return
+            if (room.canControl(watcher)) {
+                for (watcherToSet in room.getWatchers()) {
+                    if (watcherToSet.name == username) {
+                        watcherToSet.ready = isReady
+                        fanOut(
+                            watcherToSet,
+                            roomOnly = true,
+                            readinessMessage(watcherToSet, manuallyInitiated, setBy = watcher.name),
+                        )
+                    }
+                }
+            }
+        } else {
+            watcher.ready = isReady
+            fanOut(watcher, roomOnly = true, readinessMessage(watcher, manuallyInitiated))
+        }
+    }
+
+    // --- Playlist ---
+
+    fun setPlaylist(watcher: ServerWatcher, files: List<String>) {
+        val room = watcher.room ?: return
+        // Gated on canControl AND playlistIsValid: an oversized playlist is refused and the sender
+        // gets the room's current playlist back, like a non-controller. Without the size cap one
+        // client could make the server relay megabyte broadcasts to every watcher.
+        if (room.canControl(watcher) && playlistIsValid(files)) {
+            room.setPlaylist(files, watcher)
+            fanOut(watcher, roomOnly = true, WireMessage.playlistChange(files = files, user = watcher.name))
+            /* A shorter list can leave the selection pointing past the end. Correct it here
+             * rather than letting every client work it out, or they work it out differently. */
+            val stored = room.getPlaylistIndex()
+            if (stored != null && stored !in files.indices) {
+                val corrected = files.lastIndex.takeIf { it >= 0 }
+                if (corrected != null) {
+                    room.setPlaylistIndex(corrected, watcher)
+                    fanOut(watcher, roomOnly = true, WireMessage.playlistIndex(index = corrected, user = watcher.name))
+                }
+            }
+        } else {
+            _connections[watcher]?.sendPlaylist(room.name, room.getPlaylist())
+            room.getPlaylistIndex()?.let {
+                _connections[watcher]?.sendPlaylistIndex(room.name, it)
+            }
+        }
+    }
+
+    fun setPlaylistIndex(watcher: ServerWatcher, index: Int) {
+        val room = watcher.room ?: return
+        // An index outside the playlist names nothing. Storing it makes every watcher that
+        // joins later ask for a file the room does not have.
+        val valid = index in room.getPlaylist().indices
+        if (room.canControl(watcher) && valid) {
+            room.setPlaylistIndex(index, watcher)
+            fanOut(watcher, roomOnly = true, WireMessage.playlistIndex(index = index, user = watcher.name))
+        } else {
+            room.getPlaylistIndex()?.let {
+                _connections[watcher]?.sendPlaylistIndex(room.name, it)
+            }
+        }
+    }
+
+    // --- Controlled rooms ---
+
+    fun authRoomController(watcher: ServerWatcher, password: String, roomBaseName: String? = null) {
+        val room = watcher.room ?: return
+        val targetName = roomBaseName ?: room.name
+
+        try {
+            // The password proves control of the room it was minted for and of no other. PC grants
+            // control of whatever room the watcher sits in; here the target must be that room, or
+            // one valid password would unlock every controlled room on the server.
+            val success = RoomPasswordProvider.check(targetName, password, config.salt) && targetName == room.name
+            if (success && room is ControlledServerRoom) {
+                room.addController(watcher)
+            }
+            if (success) {
+                roomManager.broadcast(watcher) { w ->
+                    _connections[w]?.sendControlledRoomAuthStatus(true, watcher.name, room.name)
+                }
+            } else {
+                // A refusal is the sender's business. Broadcasting it made every wrong guess a
+                // message to the whole room, which a guesser could use as a megaphone.
+                failedAuth(watcher)
+            }
+        } catch (_: NotControlledRoomException) {
+            // Plain room: mint a new controlled-room name for it.
+            val newName = RoomPasswordProvider.getControlledRoomName(targetName, password, config.salt)
+            if (newName.length > MAX_ROOM_NAME_LENGTH) {
+                /* The hash takes 14 characters. Cutting the name here would produce something
+                 * that no longer parses as managed, so the room would come back as an ordinary
+                 * one and nobody would be told why. Refuse instead. */
+                _connections[watcher]?.sendError(
+                    "Room name too long for a managed room (at most ${MAX_ROOM_NAME_LENGTH - RoomPasswordProvider.MANAGED_NAME_OVERHEAD} characters)"
+                )
+                return
+            }
+            _connections[watcher]?.sendNewControlledRoom(newName, password)
+        } catch (_: IllegalArgumentException) {
+            // Malformed password.
+            failedAuth(watcher)
+        }
+    }
+
+    /** Failed operator passwords per watcher; enough of them and the connection goes. */
+    private val authFailures = mutableMapOf<ServerWatcher, Int>()
+
+    private fun failedAuth(watcher: ServerWatcher) {
+        val conn = _connections[watcher] ?: return
+        val room = watcher.room ?: return
+        conn.sendControlledRoomAuthStatus(false, watcher.name, room.name)
+        val count = (authFailures[watcher] ?: 0) + 1
+        authFailures[watcher] = count
+        if (count >= MAX_AUTH_FAILURES) {
+            log(ServerLogEvent.DroppedForBadPasswords(watcher.name, count))
+            removeWatcher(watcher)
+            conn.drop()
+        }
+    }
+
+    // --- Features ---
+
+    /** Builds the [RoomFeatures] payload advertised to clients in the `Hello` response. */
+    fun buildServerFeatures(): RoomFeatures = RoomFeatures(
+        isolateRooms = config.isolateRooms,
+        supportsReadiness = !config.disableReady,
+        supportsManagedRooms = true,
+        persistentRooms = false,
+        supportsChat = !config.disableChat,
+        // Advertised unconditionally: setReady() implements controller-set-others, and PC clients
+        // gate that feature on this flag, so omitting it would stop them ever using it.
+        setOthersReadiness = true,
+        maxChatMessageLength = config.maxChatMessageLength,
+        maxUsernameLength = config.maxUsernameLength,
+        maxRoomNameLength = MAX_ROOM_NAME_LENGTH,
+        maxFilenameLength = MAX_FILENAME_LENGTH,
+    )
+
+    fun getAllWatchersForUser(watcher: ServerWatcher): List<ServerWatcher> {
+        return roomManager.getAllWatchersForUser(watcher)
+    }
+
+    // --- Logging ---
+
+    private val logSeq = atomic(0L)
+
+    private fun log(event: ServerLogEvent) {
+        loggy("SyncplayServer: $event")
+        val entry = ServerLogEntry(
+            seq = logSeq.incrementAndGet(),
+            timestamp = SyncClock.nowMillis(),
+            event = event,
+        )
+        /* Bounded: the screen keeps its own capped copy, and a long-running host must not grow
+         * this list for the life of the process. Under the cap the list is copied once, not
+         * twice: the old form built the concatenation and then a second list from its tail, on
+         * the one thread that serves every client. */
+        serverLog.update { current ->
+            if (current.size < LOG_CAP) current + entry
+            else ArrayList<ServerLogEntry>(LOG_CAP).apply {
+                addAll(current.subList(current.size - LOG_CAP + 1, current.size))
+                add(entry)
+            }
+        }
+    }
+
+    /**
+     * Shuts down the server, cancelling all state timers and dropping every client. Confined to
+     * [serverDispatcher] like every other mutation, so a Stop cannot race a tick or a join.
+     */
+    suspend fun shutdown() = onServerThread {
+        log(ServerLogEvent.ShuttingDown)
+        for ((watcher, conn) in _connections.toMap()) {
+            stopStateTimer(watcher)
+            conn.drop()
+        }
+        stateTimerJobs.clear()
+        _connections.clear()
+        authFailures.clear()
+        connectedClients.value = 0
+    }
+
+    private companion object {
+        const val LOG_CAP = 500
+
+        /** Wrong operator passwords tolerated on one connection before it is dropped. */
+        const val MAX_AUTH_FAILURES = 3
+    }
+}
+
+/** How a log line is drawn: a join is good news, an error is red, the rest is quiet. */
+enum class ServerLogLevel { Info, Ok, Error }
+
+/**
+ * One thing the hosted server did, as data rather than as an English sentence.
+ *
+ * The log is the whole body of the hosting screen, so it has to speak the app's language. Keeping
+ * the event and its values apart means the screen picks the wording, and the severity comes from
+ * the event itself instead of from sniffing the sentence for the word "error".
+ */
+sealed interface ServerLogEvent {
+
+    val level: ServerLogLevel get() = ServerLogLevel.Info
+
+    data class Joined(val user: String, val room: String) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Ok
+    }
+
+    data class Disconnected(val user: String) : ServerLogEvent
+
+    data class TimedOut(val user: String, val seconds: Int) : ServerLogEvent
+
+    data class DroppedForBadPasswords(val user: String, val attempts: Int) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Error
+    }
+
+    data object ShuttingDown : ServerLogEvent
+
+    data class Started(val port: Int) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Ok
+    }
+
+    data object Stopped : ServerLogEvent
+
+    data class InvalidPort(val port: String) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Error
+    }
+
+    data class PortTaken(val port: Int) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Error
+    }
+
+    data class StartFailed(val reason: String) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Error
+    }
+
+    data class StopFailed(val reason: String) : ServerLogEvent {
+        override val level get() = ServerLogLevel.Error
+    }
+}
+
+data class ServerLogEntry(
+    /** Increases for the life of the server. A reader's place in the log, once the list rotates. */
+    val seq: Long,
+    val timestamp: Long,
+    val event: ServerLogEvent,
+    val level: ServerLogLevel = event.level,
+)

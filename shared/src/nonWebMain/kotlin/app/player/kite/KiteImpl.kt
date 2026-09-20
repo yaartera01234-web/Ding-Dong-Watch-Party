@@ -1,0 +1,766 @@
+package app.player.kite
+
+import androidx.annotation.UiThread
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SettingsInputComponent
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import app.i18n.Localization
+import app.player.PlayerImpl
+import app.player.models.Chapter
+import app.player.models.MediaFile
+import app.player.models.MediaFileLocation
+import app.player.models.Track
+import app.player.models.TrackTrait
+import app.preferences.Preferences.KITE_AUDIO_DELAY_MS
+import app.preferences.Preferences.AUDIO_VISUALIZATION
+import app.preferences.Preferences.KITE_DEBUG_STATS
+import app.preferences.Preferences.KITE_EQ_BRIGHTNESS
+import app.preferences.Preferences.KITE_EQ_CONTRAST
+import app.preferences.Preferences.KITE_EQ_HUE
+import app.preferences.Preferences.KITE_EQ_SATURATION
+import app.preferences.Preferences.KITE_COMPOSE_RENDERER
+import app.preferences.Preferences.KITE_HARDWARE_ACCELERATION
+import app.preferences.Preferences.KITE_PRESERVE_PITCH
+import app.preferences.Preferences.KITE_SUBTITLE_AUTOSELECT
+import app.preferences.Preferences.KITE_SUBTITLE_DELAY_MS
+import app.preferences.Preferences.KITE_SUBTITLE_POS
+import app.preferences.Preferences.SUBTITLE_SIZE
+import app.preferences.PrefExtraConfig
+import app.preferences.settings.SettingCategory
+import app.preferences.settings.withControl
+import app.preferences.value
+import app.preferences.watchPref
+import io.github.yuroyami.kiteplayer.audioviz.KiteAudioViz
+import app.player.models.shouldShowAudioVisualization
+import io.github.yuroyami.kiteplayer.audioviz.rememberAudioVizState
+import io.github.yuroyami.kiteplayer.compose.KitePlayerVideo
+import io.github.yuroyami.kiteplayer.compose.KiteRenderPath
+import app.room.OSDCategory
+import app.room.RoomViewmodel
+import app.uicomponents.glassEnabled
+import app.utils.getCacheDirectoryPath
+import app.utils.getFileName
+import app.utils.loggy
+import app.utils.writeFileBytes
+import io.github.vinceglb.filekit.PlatformFile
+import io.github.vinceglb.filekit.readBytes
+import io.github.yuroyami.kiteplayer.HwdecPolicy
+import io.github.yuroyami.kiteplayer.KitePlayer
+import io.github.yuroyami.kiteplayer.KitePlayerPlatform
+import io.github.yuroyami.kiteplayer.MediaItem
+import io.github.yuroyami.kiteplayer.PlaybackError
+import io.github.yuroyami.kiteplayer.PlaybackStatus
+import io.github.yuroyami.kiteplayer.PlayerConfig
+import io.github.yuroyami.kiteplayer.SeekMode
+import kotlinx.coroutines.CancellationException
+import io.github.yuroyami.kiteplayer.SubtitleConfig
+import io.github.yuroyami.kiteplayer.SubtitleSource
+import io.github.yuroyami.kiteplayer.TrackInfo
+import io.github.yuroyami.kiteplayer.TrackKind
+import io.github.yuroyami.kiteplayer.VideoAdjustments
+import io.github.yuroyami.kiteplayer.VideoScale
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+
+/**
+ * KitePlayer driving Syncplay, written once for both phones.
+ *
+ * There is no androidMain/iosMain split below this line. KitePlayer's own engine is common code,
+ * so the whole of Syncplay's player contract maps onto it in shared source; the only per-platform
+ * piece is [KiteMediaResolver], which exists because Android hands out `content://` URIs that
+ * FFmpeg cannot open and iOS hands out real paths that it can. The platform engine registry
+ * injects that resolver once when it constructs [KiteEngine].
+ *
+ * The suspend contract fits without a single blocking bridge. Everything Syncplay declares as
+ * suspend (open, destroy, track selection) is suspend in KitePlayer too, and the two members
+ * Syncplay needs synchronously, [currentPositionMs] and [seekTo], map onto KitePlayer's
+ * deliberately non-suspending `position()` and `seekLater()`. No `runBlocking` appears here, and
+ * none is needed.
+ */
+internal class KiteImpl(
+    viewmodel: RoomViewmodel,
+    private val kiteEngine: KiteEngine,
+    private val mediaResolver: KiteMediaResolver,
+) : PlayerImpl(viewmodel, kiteEngine) {
+
+    /**
+     * A StateFlow, not a plain field and deliberately not Compose snapshot state. Not plain
+     * because [VideoPlayer] passes it to its presentation and [initialize] assigns it from inside
+     * that composable's first pass; a plain `var` would be read once as null and never re-read,
+     * leaving video output permanently detached from a player that is otherwise running. Not
+     * `mutableStateOf` because this impl is constructed on RoomViewmodel's IO launch, and a
+     * snapshot-state object created off the main thread can be read by a composition whose
+     * snapshot predates that creation; both iOS presentations crashed on room entry with
+     * "Reading a state that was created after the snapshot was taken". A StateFlow has no
+     * snapshot identity, so the construction thread cannot matter.
+     */
+    private val kiteFlow = MutableStateFlow<KitePlayer?>(null)
+
+    private var kite: KitePlayer?
+        get() = kiteFlow.value
+        set(value) {
+            kiteFlow.value = value
+        }
+
+    /**
+     * Completed only after the active presentation has attached video output to [kite]. Incoming
+     * room media can race the first composition; suspending it here preserves the load and ensures
+     * the renderer is present before KitePlayer chooses its decoder path.
+     */
+    private val presentedPlayer = CompletableDeferred<KitePlayer>()
+
+    /**
+     * The resolution behind the media currently loaded, kept alive for exactly as long as the
+     * engine may read from it. Released when the next media replaces it or the player is torn
+     * down; on Android that release closes a file descriptor, on iOS it does nothing.
+     */
+    private var mediaPath: KiteMediaPath? = null
+
+    /** KitePlayer publishes a duration once the container is parsed, so nothing is polled for it. */
+    private var durationWatcher: Job? = null
+
+    /** Temporary diagnostic for the background-return video slowdown. Remove once root-caused. */
+    private var statsWatcher: Job? = null
+
+    /**
+     * KitePlayer publishes position through its own progress flow, but Syncplay's shared tracker
+     * reads [currentPositionMs] on a timer, and reading it costs one atomic load. Matching mpv's
+     * cadence keeps the room's position reports at the resolution the protocol expects.
+     */
+    override val trackerJobInterval: Duration = 250.milliseconds
+
+    /** Chapters ride the snapshot since KitePlayer 0.0.5, so the UI may offer chapter jumps. */
+    override val supportsVideoTrackSelection = true
+    override val supportsAudioVisualization = true
+    override val supportsChapters: Boolean = true
+
+    /** Real since KitePlayer 0.0.5: a pitch-preserving tempo stage within 0.25x to 4x. */
+    override val supportsSpeedAdjustment: Boolean = true
+
+    /** Android hosts PiP generically; iOS has no KitePlayer-specific PiP controller yet. */
+    override val supportsPictureInPicture: Boolean
+        get() = KitePlayerPlatform.supportsPictureInPicture
+
+    /** Fit, Fill and Stretch, cycled in [switchAspectRatio]; every renderer follows the mode. */
+    override val canChangeAspectRatio: Boolean = true
+
+    @UiThread
+    override fun initialize() {
+        if (isInitialized) return
+        // The engine-level settings read once at creation; the runtime ones (delays, subtitle
+        // scale) are ALSO seeded here so a fresh room starts where the sliders sit.
+        val config = PlayerConfig(
+            hardwareDecode = if (KITE_HARDWARE_ACCELERATION.value()) HwdecPolicy.Auto else HwdecPolicy.Off,
+            subtitles = SubtitleConfig(
+                autoSelect = KITE_SUBTITLE_AUTOSELECT.value(),
+                // The one shared subtitle-size setting, on the same 16-to-1.0 scale as changeSubtitleSize.
+                fontScale = (SUBTITLE_SIZE.value() / 16f).coerceAtLeast(0.05f),
+                delay = KITE_SUBTITLE_DELAY_MS.value().milliseconds,
+            ),
+        )
+        val player = requireNotNull(KitePlayerPlatform.createOrNull(config)) {
+            "KitePlayer is unavailable: ${KitePlayerPlatform.availability}"
+        }
+        player.setAudioDelay(KITE_AUDIO_DELAY_MS.value().milliseconds)
+        player.setPreservePitch(KITE_PRESERVE_PITCH.value())
+        player.setSubtitlePosition(subtitlePositionFromPref(KITE_SUBTITLE_POS.value()))
+        player.setVideoAdjustments(adjustmentsFromPrefs())
+        kite = player
+        isInitialized = true
+        loggy("KitePlayer: engine created")
+        startTrackingProgress()
+        watchEngineState()
+        if (KITE_DEBUG_STATS.value()) watchEngineStats()
+    }
+
+    /**
+     * The engine-statistics log, now behind the KITE_DEBUG_STATS setting. One line per stats
+     * tick (KitePlayer publishes them once a second) tells which layer stalls when playback
+     * misbehaves: decodedVideoFrames stalling means the decoder, submittedFrames stalling means
+     * the schedule or the renderer refused frames, and both advancing while the screen is
+     * static means the frames are drawn by nobody (the Compose/UIKit drawing side). The
+     * background-return slowdown investigation reads exactly these lines, so enable the setting
+     * before reproducing it on a device.
+     */
+    private fun watchEngineStats() {
+        val player = kite ?: return
+        statsWatcher?.cancel()
+        statsWatcher = playerScopeMain.launch {
+            var lastDecoded = -1L
+            var lastSubmitted = -1L
+            player.stats.collect { s ->
+                if (s.decodedVideoFrames == lastDecoded && s.submittedFrames == lastSubmitted) return@collect
+                lastDecoded = s.decodedVideoFrames
+                lastSubmitted = s.submittedFrames
+                loggy(
+                    "KiteStats: status=${player.state.value.status}" +
+                        " pos=${player.position().inWholeMilliseconds}" +
+                        " decoded=${s.decodedVideoFrames} submitted=${s.submittedFrames}" +
+                        " headless=${s.headlessFrames} droppedLate=${s.droppedFramesLate}" +
+                        " repeated=${s.repeatedFrames} underruns=${s.audioUnderruns}" +
+                        // The three that say WHICH layer is short when playback crawls: a decoder
+                        // that cannot keep up shows a low fps with a full video queue, while a
+                        // reader that cannot keep up shows both queues near empty and rebuffers
+                        // climbing. Without them a crawl looks the same either way.
+                        " fps=${s.videoDecodeFps.toInt()} videoQms=${s.videoQueueDepth.inWholeMilliseconds}" +
+                        " audioQms=${s.audioQueueDepth.inWholeMilliseconds} rebuffers=${s.rebuffers}" +
+                        " drift=${s.avDrift} hwdec=${s.hardwareDecode} master=${s.masterClock}",
+                )
+            }
+        }
+    }
+
+    /**
+     * KitePlayer knows a file's real duration the moment its container is parsed and publishes it
+     * on the snapshot flow, so the room is announced from that event rather than from
+     * [parseMedia]. Declaring it here is what stops the iOS path announcing a second time with no
+     * duration attached.
+     */
+    override val announcesFileLoadViaEvent: Boolean = true
+
+    /**
+     * Mirrors the engine's own state onto the room: the play/pause truth every engine owes
+     * [app.player.PlayerManager.isNowPlaying], the duration the container reported, the file
+     * announcement that re-anchors sync, and the end of playback that drives shared-playlist
+     * advance. All of it comes from the snapshot flow rather than from polling, which is why
+     * [trackerJobInterval] only has to carry the position.
+     */
+    private fun watchEngineState() {
+        val player = kite ?: return
+        durationWatcher?.cancel()
+        durationWatcher = playerScopeMain.launch {
+            var wasEnded = false
+            var announcedMedia: MediaFile? = null
+            var reportedError: PlaybackError? = null
+            player.state.collect { snapshot ->
+                // The play button and the protocol's divergence broadcast both collect
+                // isNowPlaying, so the engine's status must be mirrored the way every other
+                // engine mirrors its events. Buffering counts as playing: the engine is trying
+                // to advance (isActive), and KitePlayer never auto-pauses on underrun, so a
+                // buffering spell must not read as a pause. Opening is media lifecycle, not a
+                // playback intent, and is left alone like VLCKit's transitional states.
+                playerManager.isBuffering.value =
+                    snapshot.status == PlaybackStatus.Buffering || snapshot.status == PlaybackStatus.Opening
+                when (snapshot.status) {
+                    PlaybackStatus.Playing, PlaybackStatus.Buffering ->
+                        playerManager.isNowPlaying.value = true
+                    PlaybackStatus.Paused, PlaybackStatus.Ended, PlaybackStatus.Idle ->
+                        playerManager.isNowPlaying.value = false
+                    PlaybackStatus.Failed -> {
+                        // A failure is ours alone: told to the user, never broadcast as a pause.
+                        viewmodel.protocol.noteExpectedPlaybackState(paused = true)
+                        playerManager.isNowPlaying.value = false
+                        val error = snapshot.error
+                        if (error != null && error !== reportedError) {
+                            reportedError = error
+                            val reason = error.message
+                            viewmodel.dispatchOSD(OSDCategory.WARNING) { Localization.strings.roomPlaybackError(reason) }
+                            viewmodel.dispatcher.broadcastMessage(isChat = false, isError = true) {
+                                Localization.strings.roomPlaybackError(reason)
+                            }
+                        }
+                    }
+                    PlaybackStatus.Opening -> Unit
+                }
+                val durationMs = snapshot.duration?.inWholeMilliseconds ?: 0L
+                if (durationMs > 0) playerManager.timeFullMillis.value = durationMs
+
+                // Announce every new MediaFile once it has opened, with whatever duration is
+                // known (a live stream has none and still needs announcing, as 0). A later
+                // duration or an HLS/DASH refinement is announced again for the same file.
+                // Duration equality is not file identity: a resolver may hand two files the
+                // same length.
+                val opened = snapshot.status != PlaybackStatus.Idle && snapshot.status != PlaybackStatus.Opening
+                val media = viewmodel.media
+                if (media != null && opened && snapshot.status != PlaybackStatus.Failed) {
+                    val durationSeconds = durationMs / 1000.0
+                    val durationChanged = durationMs > 0 && media.fileDuration != durationSeconds
+                    if (durationChanged) media.fileDuration = durationSeconds
+                    if (media !== announcedMedia || durationChanged) {
+                        announcedMedia = media
+                        announceFileLoaded()
+                    }
+                }
+
+                val ended = snapshot.status == PlaybackStatus.Ended
+                if (ended && !wasEnded) onPlaybackEnded()
+                wasEnded = ended
+            }
+        }
+    }
+
+    override suspend fun destroy() {
+        // Match every other engine's destroy contract: stop all RoomViewmodel-capturing jobs
+        // before the player disappears, then finish native teardown even if the caller is cancelled.
+        isInitialized = false
+        playerSupervisorJob.cancel()
+        presentedPlayer.cancel()
+        durationWatcher?.cancel()
+        durationWatcher = null
+        statsWatcher?.cancel()
+        statsWatcher = null
+
+        // Cancellation above is still required when teardown races an injection waiting for the
+        // first video output; only resource teardown itself can be skipped in the empty state.
+        if (kite == null && mediaPath == null) return
+
+        val player = kite
+        kite = null
+        val path = mediaPath
+        mediaPath = null
+
+        withContext(NonCancellable) {
+            try {
+                player?.closeAndAwait()
+            } finally {
+                path?.release()
+            }
+        }
+    }
+
+    override fun onClosing() {
+        // An early load can be suspended waiting for the first applied native surface while the
+        // base teardown is waiting for the media transaction mutex. Wake it before that wait.
+        presentedPlayer.cancel()
+        playerSupervisorJob.cancel()
+    }
+
+    override suspend fun configurableSettings() = SettingCategory(
+        key = "engine-kite",
+        title = { it.uisettingCategKite },
+        icon = Icons.Filled.SettingsInputComponent,
+    ) {
+        // Creation-time settings: they say so in their summaries and apply at the next load.
+        +KITE_HARDWARE_ACCELERATION
+        +KITE_SUBTITLE_AUTOSELECT
+        // Runtime: flipping it recomposes VideoPlayer, which swaps the presentation over the
+        // running player (KitePlayerVideo path change; the engine keeps position and play state).
+        +KITE_COMPOSE_RENDERER
+        // Runtime settings: the callbacks reach the live engine immediately. Subtitle size is
+        // the shared player setting; a second slider here fought it on every file load.
+        +KITE_SUBTITLE_DELAY_MS.withControl(PrefExtraConfig.Slider(maxValue = 10_000, minValue = -10_000) { ms ->
+                kite?.setSubtitleDelay(ms.milliseconds)
+            })
+        +KITE_AUDIO_DELAY_MS.withControl(PrefExtraConfig.Slider(maxValue = 1_000, minValue = -1_000) { ms ->
+                kite?.setAudioDelay(ms.milliseconds)
+            })
+        +KITE_PRESERVE_PITCH.withControl(PrefExtraConfig.BooleanCallback { preserve ->
+                // At 1.0x the two mechanisms are the same bypass; away from it the engine rides
+                // its internal precise seek and refuses typed on an unseekable source.
+                try {
+                    kite?.setPreservePitch(preserve)
+                } catch (refused: UnsupportedOperationException) {
+                    loggy("KitePlayer: pitch-law change refused: ${refused.message}")
+                }
+            })
+        +KITE_SUBTITLE_POS.withControl(PrefExtraConfig.Slider(maxValue = 100, minValue = 10) { percent ->
+                kite?.setSubtitlePosition(subtitlePositionFromPref(percent))
+            })
+        +KITE_EQ_BRIGHTNESS.withControl(PrefExtraConfig.Slider(maxValue = 100, minValue = -100) { _ ->
+                kite?.setVideoAdjustments(adjustmentsFromPrefs())
+            })
+        +KITE_EQ_CONTRAST.withControl(PrefExtraConfig.Slider(maxValue = 200, minValue = 0) { _ ->
+                kite?.setVideoAdjustments(adjustmentsFromPrefs())
+            })
+        +KITE_EQ_SATURATION.withControl(PrefExtraConfig.Slider(maxValue = 200, minValue = 0) { _ ->
+                kite?.setVideoAdjustments(adjustmentsFromPrefs())
+            })
+        +KITE_EQ_HUE.withControl(PrefExtraConfig.Slider(maxValue = 180, minValue = -180) { _ ->
+                kite?.setVideoAdjustments(adjustmentsFromPrefs())
+            })
+        +KITE_DEBUG_STATS.withControl(PrefExtraConfig.BooleanCallback { enabled ->
+                if (enabled) watchEngineStats() else {
+                    statsWatcher?.cancel()
+                    statsWatcher = null
+                }
+            })
+    }
+
+    /**
+     * The four equalizer sliders speak Synkplay's own units (percent-shaped ints); the engine
+     * speaks one VideoAdjustments value. Rebuilt whole on every slider move, because the engine
+     * bakes the colour matrix once per SETTING, so partial updates would buy nothing.
+     */
+    private fun adjustmentsFromPrefs() = VideoAdjustments(
+        brightness = (KITE_EQ_BRIGHTNESS.value() / 100f).coerceIn(-1f, 1f),
+        contrast = (KITE_EQ_CONTRAST.value() / 100f).coerceIn(0f, 2f),
+        saturation = (KITE_EQ_SATURATION.value() / 100f).coerceIn(0f, 2f),
+        hueDegrees = KITE_EQ_HUE.value().toFloat().coerceIn(-180f, 180f),
+    )
+
+    /** The slider says percent from the top of the allowed band; the engine takes a fraction. */
+    private fun subtitlePositionFromPref(percent: Int) = (percent / 100f).coerceIn(0.1f, 1f)
+
+    override suspend fun hasMedia(): Boolean =
+        isInitialized && kite?.state?.value?.media != null
+
+    override suspend fun isPlaying(): Boolean =
+        kite?.state?.value?.status?.isActive == true
+
+    override suspend fun analyzeTracks(mediafile: MediaFile) {
+        if (!isInitialized) return
+        val tracks = kite?.state?.value?.tracks ?: return
+        mediafile.tracks.clear()
+
+        tracks.video.filterNot { it.isCoverArt }.forEachIndexed { position, info ->
+            mediafile.tracks.add(KiteTrack(
+                name = info.title ?: info.codec,
+                type = TrackType.VIDEO,
+                index = position,
+                selected = info.id == tracks.selectedVideo,
+                trackId = info.id,
+                codec = info.codec,
+                videoDescription = info.videoSize?.let { "${it.width} × ${it.height}" },
+            ))
+        }
+        tracks.audio.forEachIndexed { position, info ->
+            mediafile.tracks.add(
+                KiteTrack(
+                    name = info.title?.takeIf { it.isNotBlank() } ?: info.language ?: info.codec,
+                    type = TrackType.AUDIO,
+                    index = position,
+                    selected = info.id == tracks.selectedAudio,
+                    trackId = info.id,
+                    language = info.language,
+                    trait = info.traitOrNull(),
+                    channelCount = info.channels,
+                    codec = info.codec,
+                ),
+            )
+        }
+        tracks.subtitles.forEachIndexed { position, info ->
+            mediafile.tracks.add(
+                KiteTrack(
+                    name = info.title?.takeIf { it.isNotBlank() } ?: info.language ?: info.codec,
+                    type = TrackType.SUBTITLE,
+                    index = position,
+                    selected = info.id == tracks.selectedSubtitle,
+                    trackId = info.id,
+                    language = info.language,
+                    trait = info.traitOrNull(),
+                    channelCount = info.channels,
+                    codec = info.codec,
+                ),
+            )
+        }
+
+        applyPreferredLanguages(mediafile)
+    }
+
+    /** KitePlayer states both flags on the track itself, so nothing is read out of the label. */
+    private fun TrackInfo.traitOrNull(): TrackTrait? = when {
+        isAccessibility -> TrackTrait.ACCESSIBILITY
+        isForced -> TrackTrait.FORCED
+        else -> null
+    }
+
+    override suspend fun selectTrack(track: Track?, type: TrackType) {
+        if (!isInitialized) return
+        val kind = when (type) {
+            TrackType.VIDEO -> TrackKind.Video
+            TrackType.AUDIO -> TrackKind.Audio
+            TrackType.SUBTITLE -> TrackKind.Subtitle
+        }
+        // The language pass in analyzeTracks skips a type with a recorded pick. Without this
+        // record it re-selected the preferred-language track right after every pick, off included.
+        playerManager.currentTrackChoices.remember(type, track)
+        // A null track means "none", which the engine spells as a null id. Anything that is not
+        // one of ours cannot be resolved to a stream, so it is treated the same way rather than
+        // guessed at.
+        try {
+            val change = kite?.selectTrack(kind, (track as? KiteTrack)?.trackId)
+            loggy("KitePlayer: selectTrack($kind, ${track?.name ?: "none"}) -> $change")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (refused: Exception) {
+            // The engine refuses typed (unseekable source, backend without a subtitle decoder,
+            // an id the media does not have). Swallowing that here is what made a refused change
+            // read as "nothing happens" (owner report 2026-08-26), so it goes to the OSD.
+            loggy("KitePlayer: selectTrack($kind) refused: ${refused.message}")
+            viewmodel.dispatchOSD { refused.message ?: "Track change refused" }
+        }
+    }
+
+    override suspend fun analyzeChapters(mediafile: MediaFile) {
+        if (!isInitialized) return
+        val chapters = kite?.state?.value?.chapters ?: return
+        mediafile.chapters.clear()
+        chapters.forEachIndexed { index, chapter ->
+            mediafile.chapters.add(
+                Chapter(
+                    index = index,
+                    name = chapter.title ?: "Chapter ${index + 1}",
+                    timeOffsetMillis = chapter.start.inWholeMilliseconds,
+                ),
+            )
+        }
+    }
+
+    override suspend fun jumpToChapter(chapter: Chapter) {
+        // The base class broadcasts the seek to the room; the local jump is ours.
+        super.jumpToChapter(chapter)
+        seekTo(chapter.timeOffsetMillis)
+    }
+
+    /**
+     * Re-selects whatever the user last chose, after a reload replaced the track list.
+     *
+     * KitePlayer keeps its selection across a seek and loses it only when new media is opened, and
+     * a fresh file has no previous choice to honour, so this is a deliberate no-op rather than an
+     * unimplemented hole.
+     */
+    override suspend fun reapplyTrackChoices() = Unit
+
+    /**
+     * Loads a subtitle file into the running engine (KitePlayer 0.0.5): the track appears in the
+     * list, is selected immediately, and its cues run through the same timing path container
+     * subtitles use. SubRip and WebVTT, the engine's text path.
+     *
+     * The resolver gives Android's content URIs an openable path, exactly like video; the
+     * resolution is released as soon as the call returns, because the engine reads the file once
+     * at add time and never again.
+     */
+    override suspend fun loadExternalSubImpl(uri: PlatformFile, extension: String) {
+        val player = kite ?: return
+        val resolved = mediaResolver.resolve(uri)
+            ?: error("KitePlayer cannot open the subtitle file $uri")
+        try {
+            // The video path hands the engine an fd THROUGH its demuxer open options; the
+            // subtitle reader is a plain file read with no options channel, and re-opening a
+            // SAF descriptor by its /proc path is refused by the kernel (the resolver says why).
+            // So an fd-shaped resolution is copied once into the app cache and the engine reads
+            // the copy. iOS resolutions are real paths and skip this entirely.
+            val readablePath = if (resolved.openOptions.containsKey("fd")) {
+                val dir = getCacheDirectoryPath("subtitles") ?: error("no cache directory for subtitles")
+                val name = (getFileName(uri) ?: "subtitle.$extension").substringAfterLast('/')
+                val copy = "$dir/$name"
+                withContext(Dispatchers.IO) { writeFileBytes(copy, uri.readBytes()) }
+                copy
+            } else resolved.uri
+            withContext(Dispatchers.IO) {
+                val id = player.addExternalSubtitle(SubtitleSource(uri = readablePath))
+                loggy("KitePlayer: external subtitle added as $id")
+            }
+            loggy("KitePlayer: tracks=${player.state.value.tracks}")
+            loggy("KitePlayer: warnings=${player.warningHistory().joinToString { it.warning.toString() }}")
+        } finally {
+            resolved.release()
+        }
+    }
+
+    override suspend fun injectVideoFileImpl(location: MediaFileLocation.Local) {
+        val player = awaitPresentedPlayer()
+        val resolved = mediaResolver.resolve(location.file)
+        if (resolved == null) {
+            loggy("KitePlayer: no openable path for ${location.commonUri}")
+            error("KitePlayer cannot open ${location.commonUri}")
+        }
+        openAndKeep(player, resolved)
+    }
+
+    override suspend fun injectVideoURLImpl(location: MediaFileLocation.Remote) {
+        val player = awaitPresentedPlayer()
+        openAndKeep(player, kiteMediaPathOf(location.url))
+    }
+
+    /**
+     * Waits for player construction and video-output attachment instead of dropping an early
+     * load. Bounded: a renderer that never attaches must fail the load, not hold the media
+     * transaction mutex forever.
+     */
+    private suspend fun awaitPresentedPlayer(): KitePlayer =
+        withTimeoutOrNull(RENDERER_ATTACH_TIMEOUT_MS) { presentedPlayer.await() }
+            ?: error("KitePlayer video output did not attach in time")
+
+    /**
+     * Opens [path] and only then releases the previous one. The order matters on Android: the old
+     * resolution may own a file descriptor the engine is still reading from while the new open
+     * probes its container, and closing it first would pull the floor out from under a running
+     * demuxer.
+     */
+    private suspend fun openAndKeep(player: KitePlayer, path: KiteMediaPath) {
+        val previous = mediaPath
+        mediaPath = path
+        loggy("KitePlayer: opening ${path.uri} options=${path.openOptions}")
+        try {
+            // The stop below drops the engine to Idle, which mirrors as "not playing". That is
+            // this client's own doing, not room news: note it before the engine can report it,
+            // or every file switch broadcast a pause to the whole room. The room's real state
+            // comes back with the first sync after the new file announces itself.
+            viewmodel.protocol.noteExpectedPlaybackState(paused = true)
+            withContext(Dispatchers.IO) {
+                // KitePlayer's open() is strict: legal only from Idle, Ended and Failed, and a
+                // second file loaded while the first sits Paused throws. stop() is legal from
+                // EVERY state (a no-op when there is nothing to stop), so the unconditional
+                // prefix is the correct caller-side spelling of "replace whatever is playing".
+                player.stop()
+                player.open(MediaItem(uri = path.uri, openOptions = path.openOptions))
+            }
+            loggy("KitePlayer: opened, status=${player.state.value.status} duration=${player.state.value.duration}")
+        } catch (e: Exception) {
+            // PlayerImpl.inject catches this and shows the load-failure OSD; the line here is what
+            // says WHICH uri and WHY, which the OSD cannot.
+            loggy("KitePlayer: open failed for ${path.uri}: ${e.stackTraceToString()}")
+            throw e
+        } finally {
+            previous?.release()
+        }
+    }
+
+    override suspend fun pause() {
+        kite?.pause()
+    }
+
+    override suspend fun play() {
+        kite?.play()
+    }
+
+    override suspend fun setSpeed(speed: Double) {
+        // Real since 0.0.5: a pitch-preserving tempo stage. The engine refuses a live change on
+        // an unseekable source (there is no epoch boundary to ride); the room's 0.95x slowdown
+        // then simply does not happen, which is the honest outcome for a live stream.
+        try {
+            kite?.setSpeed(speed.coerceIn(KitePlayer.SPEED_MIN, KitePlayer.SPEED_MAX))
+        } catch (refused: UnsupportedOperationException) {
+            loggy("KitePlayer: speed change refused: ${refused.message}")
+        }
+    }
+
+    override suspend fun isSeekable(): Boolean = kite?.state?.value?.seekable == true
+
+    @UiThread
+    override fun seekTo(toPositionMs: Long) {
+        if (!isInitialized) return
+        super.seekTo(toPositionMs)
+        // seekLater is KitePlayer's non-suspending seek: it hands the request to the engine's own
+        // seek machine and returns, which is exactly the contract this UiThread member needs.
+        // Precise lands on the exact frame in one step. The two-phase KeyframeThenRefine was
+        // worth having when the decode-forward took long enough to read as the player reloading;
+        // the engine's seek is now near-instant, so the keyframe and the exact frame arrived a
+        // blink apart and the picture visibly flashed twice for every seek. The position mask
+        // reports the target throughout either way. seekLater throws on a negative.
+        kite?.seekLater(toPositionMs.coerceAtLeast(0L).milliseconds, SeekMode.Precise)
+    }
+
+    @UiThread
+    override fun currentPositionMs(): Long = kite?.position()?.inWholeMilliseconds ?: 0L
+
+    override suspend fun switchAspectRatio(): String {
+        val player = kite ?: return ""
+        val next = when (player.state.value.videoScale) {
+            VideoScale.Fit -> VideoScale.Fill
+            VideoScale.Fill -> VideoScale.Stretch
+            VideoScale.Stretch -> VideoScale.Fit
+        }
+        player.setVideoScale(next)
+        return when (next) {
+            VideoScale.Fit -> Localization.strings.roomAspectFit
+            VideoScale.Fill -> Localization.strings.roomAspectFill
+            VideoScale.Stretch -> Localization.strings.roomAspectStretch
+        }
+    }
+
+    /**
+     * The shared subtitle-size control speaks in the app's own units, 16 being its default; the
+     * engine speaks in a multiplier over the authored size. Mapping the two at 16-to-1.0 keeps
+     * the one slider meaning the same thing on every engine.
+     */
+    override suspend fun changeSubtitleSize(newSize: Int) {
+        kite?.setSubtitleScale((newSize / 16f).coerceAtLeast(0.05f))
+    }
+
+    @Composable
+    override fun VideoPlayer(modifier: Modifier, onPlayerReady: () -> Unit) {
+        // Construct from the composition that owns the output. KitePlayerVideo reports its
+        // renderer attached, so an early media injection waits for the same invariant on the
+        // native-view and the pure-Compose path alike. Flipping the pref swaps the presentation
+        // over the RUNNING player: the engine rebuilds a coupled decoder at position by itself.
+        LaunchedEffect(Unit) {
+            initialize()
+        }
+        val composedKite by kiteFlow.collectAsState()
+        val composeRenderer by KITE_COMPOSE_RENDERER.watchPref()
+        // The native view is a surface the frosted panels cannot sample, which is why the other
+        // engines swap their view type with the same switch. Here the Compose path is the one
+        // glass can read, so glass being on decides the path and the preference decides the rest.
+        // Desktop overrides both: its native view swallows every click meant for the HUD.
+        val path = if (kiteEngine.forcesComposeCanvas || composeRenderer || glassEnabled()) {
+            KiteRenderPath.ComposeCanvas
+        } else {
+            KiteRenderPath.NativeView
+        }
+        val audioVizEnabled by AUDIO_VISUALIZATION.watchPref()
+        Box(modifier) {
+            // Keep output attached across music/video changes and while the visualizer is disabled.
+            KitePlayerVideo(
+                player = composedKite,
+                modifier = Modifier.fillMaxSize(),
+                path = path,
+                onRendererAttached = { presented ->
+                    if (presented === kiteFlow.value && presentedPlayer.complete(presented)) {
+                        onPlayerReady()
+                    }
+                },
+            )
+            composedKite?.let { player ->
+                val videoDisabled by remember(player) {
+                    player.state.map { it.tracks.video.isNotEmpty() && it.tracks.selectedVideo == null }
+                        .distinctUntilChanged()
+                }.collectAsState(initial = false)
+                // A retained renderer frame must not remain visible after the video track is disabled.
+                if (videoDisabled) Box(Modifier.fillMaxSize().background(Color.Black))
+            }
+            if (audioVizEnabled) composedKite?.let { player ->
+                val showVisualization by remember(player) {
+                    player.state.map { snapshot ->
+                        shouldShowAudioVisualization(
+                            enabled = true,
+                            audioSelected = snapshot.tracks.selectedAudio != null,
+                            videoSelected = snapshot.tracks.video.any { !it.isCoverArt && it.id == snapshot.tracks.selectedVideo },
+                        )
+                    }.distinctUntilChanged()
+                }.collectAsState(initial = false)
+                // Listen before media opens so short clips retain their first audio buffers.
+                // Disabling the preference detaches the tap as well as removing the drawing.
+                val viz = rememberAudioVizState(player)
+                LaunchedEffect(viz) { viz.directed = true }
+                if (showVisualization) {
+                    KiteAudioViz(viz, Modifier.fillMaxSize())
+                }
+            }
+        }
+    }
+
+    /** KitePlayer's gain stage stops at unity: above it is refused, not clipped, so there is no gain rung. */
+    override fun getEngineVolume(): Int =
+        ((kite?.state?.value?.volume ?: 1f) * 100).toInt().coerceIn(0, 100)
+
+    override fun setEngineVolume(percent: Int) {
+        kite?.setVolume(percent.coerceIn(0, 100) / 100f)
+    }
+
+    private companion object {
+        /** How long a load waits for the renderer before failing instead of wedging the mutex. */
+        const val RENDERER_ATTACH_TIMEOUT_MS = 15_000L
+    }
+}

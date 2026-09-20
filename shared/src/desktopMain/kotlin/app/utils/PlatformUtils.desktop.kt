@@ -1,0 +1,227 @@
+package app.utils
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.ClipEntry
+import app.player.PlayerEngine
+import app.player.kite.desktopKiteEngine
+import app.preferences.Preferences.NETWORK_ENGINE
+import app.preferences.value
+import app.protocol.network.KtorNetworkManager
+import app.protocol.network.NettyNetworkManager
+import app.protocol.network.NetworkManager
+import app.room.RoomViewmodel
+import io.github.vinceglb.filekit.PlatformFile
+import io.github.vinceglb.filekit.path
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.plugins.logging.LogLevel
+import io.ktor.client.plugins.logging.Logging
+import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.io.File
+import java.lang.ref.WeakReference
+import SyncplayMobile.shared.KiteBuildConfig
+
+actual val platform: Platform = Platform.Desktop
+
+/* Lazily cached singleton so one OkHttp engine is shared and connection pooling works.
+ * Mirrors the Android actual — OkHttp is pure JVM. */
+actual val httpClient: HttpClient by lazy {
+    HttpClient(OkHttp) {
+        install(HttpTimeout) {
+            requestTimeoutMillis = 15_000
+            connectTimeoutMillis = 10_000
+            socketTimeoutMillis = 15_000
+        }
+        install(Logging) {
+            logger = KtorLoggyLogger
+            // A whole request line carries the URL, and the Klipy key lives in the URL. Full
+            // bodies are a debugging tool, not something to ship.
+            level = if (KiteBuildConfig.IS_DEBUG) LogLevel.ALL else LogLevel.INFO
+            sanitizeHeader { header -> header == "Api-Key" || header == HttpHeaders.Authorization }
+            filter { request -> request.url.host.startsWith("api.") }
+        }
+        defaultRequest {
+            header(HttpHeaders.UserAgent, "SynkplayMobile/${KiteBuildConfig.APP_VERSION}")
+        }
+    }
+}
+
+/**
+ * Desktop has ONE engine, and it is KitePlayer.
+ *
+ * vlcj and libmpv are gone from here on the owner's instruction: the desktop build is a KitePlayer
+ * build, not a shell around whatever native player happens to be installed. That also takes their
+ * bundled natives out of the distribution.
+ *
+ * The engine renders through the Compose canvas, pinned there by KiteDesktopEngine: KitePlayer's
+ * JVM native view is real since 0.0.21, but on macOS it takes every click meant for the controls
+ * drawn over it.
+ */
+actual val availablePlatformPlayerEngines: List<PlayerEngine> = listOf(desktopKiteEngine)
+
+actual fun RoomViewmodel.instantiateNetworkManager(): NetworkManager {
+    return when (NETWORK_ENGINE.value()) {
+        "ktor" -> KtorNetworkManager(this)
+        // Netty is the desktop default — the only engine with opportunistic TLS.
+        else -> NettyNetworkManager(this)
+    }
+}
+
+actual fun generateTimestampMillis() = System.currentTimeMillis()
+
+/**
+ * The desktop has no single switch for this, so the locale's own short time pattern answers it:
+ * a pattern with an "a" field is a 12-hour one.
+ */
+actual fun deviceUses24HourClock(): Boolean = runCatching {
+    val format = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT, java.util.Locale.getDefault())
+    val pattern = (format as? java.text.SimpleDateFormat)?.toPattern() ?: return@runCatching true
+    !pattern.contains("a", ignoreCase = true)
+}.getOrDefault(true)
+
+actual fun getFolderName(uri: String): String? =
+    runCatching { File(uri).name.takeIf { it.isNotBlank() } }.getOrNull()
+
+actual fun getFileName(uri: PlatformFile): String? =
+    runCatching { File(uri.path).name.takeIf { it.isNotBlank() } }.getOrNull()
+
+actual fun getFileSize(uri: PlatformFile): Long? =
+    runCatching { File(uri.path).takeIf { it.isFile }?.length() }.getOrNull()
+
+/* The entry always originates from the system clipboard on desktop, so reading the global
+ * clipboard is equivalent and avoids depending on Compose's JVM ClipEntry internals. */
+actual fun ClipEntry.getText(): String? = runCatching {
+    Toolkit.getDefaultToolkit().systemClipboard.getData(DataFlavor.stringFlavor) as? String
+}.getOrNull()
+
+/* Desktop windows have no system-bar chrome to hide and no orientation to lock. */
+@Composable
+actual fun EnterRoomMode(portrait: Boolean) {
+}
+
+@Composable
+actual fun ExitRoomMode() {
+}
+
+actual typealias WeakRef<T> = WeakReference<T>
+
+actual fun <T : Any> createWeakRef(obj: T): WeakRef<T> = WeakReference(obj)
+
+actual fun <T : Any> WeakRef<T>?.get(): T? = this?.get()
+
+actual fun getDeviceIpAddress(): String? {
+    return try {
+        java.net.NetworkInterface.getNetworkInterfaces()?.toList()
+            ?.flatMap { it.inetAddresses.toList() }
+            ?.firstOrNull { !it.isLoopbackAddress && it is java.net.Inet4Address }
+            ?.hostAddress
+    } catch (_: Exception) {
+        null
+    }
+}
+
+actual fun getLogDirectoryPath(): String? {
+    return try {
+        val logDir = File(desktopAppDataDir, "logs")
+        if (!logDir.exists()) logDir.mkdirs()
+        logDir.absolutePath
+    } catch (_: Exception) {
+        null
+    }
+}
+
+actual fun platformDescription(): String =
+    "${System.getProperty("os.name")} ${System.getProperty("os.version")} (${System.getProperty("os.arch")})"
+
+actual fun getCacheDirectoryPath(subdir: String): String? = try {
+    File(File(desktopAppDataDir, "cache"), subdir).apply { mkdirs() }.absolutePath
+} catch (_: Exception) {
+    null
+}
+
+actual fun appendToFile(path: String, content: String) {
+    try {
+        File(path).appendText(content)
+    } catch (_: Exception) { }
+}
+
+actual fun writeTextFile(path: String, content: String) {
+    try {
+        File(path).writeText(content)
+    } catch (_: Exception) { }
+}
+
+actual fun listFiles(directoryPath: String): List<String> {
+    return try {
+        File(directoryPath).listFiles()?.map { it.name } ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+actual fun readFile(path: String): String {
+    return try {
+        File(path).readText()
+    } catch (_: Exception) { "" }
+}
+
+actual fun deleteFile(path: String) {
+    try {
+        File(path).delete()
+    } catch (_: Exception) { }
+}
+
+actual fun writeFileBytes(path: String, bytes: ByteArray) {
+    try {
+        val file = File(path)
+        file.parentFile?.mkdirs()
+        file.writeBytes(bytes)
+    } catch (_: Exception) { }
+}
+
+actual fun readFileBytes(path: String): ByteArray? {
+    return try {
+        val file = File(path)
+        if (!file.exists()) null else file.readBytes()
+    } catch (_: Exception) {
+        null
+    }
+}
+
+actual fun fileExists(path: String): Boolean = try {
+    File(path).exists()
+} catch (_: Exception) {
+    false
+}
+
+/** Where an mpv config would live on this platform. Nothing reads it: the only desktop engine
+ *  is KitePlayer, and the mpv rows are Android's. Kept so the expect declaration is satisfied
+ *  and a path exists if a desktop mpv ever arrives. */
+actual fun getMpvConfFilePath(): String? = try {
+    val dir = java.io.File(desktopAppDataDir, "mpv").apply { mkdirs() }
+    java.io.File(dir, "mpv.conf").absolutePath
+} catch (_: Exception) {
+    null
+}
+
+/** Desktop "shortcut" = command-line join args parsed in Main.kt (--user/--room/--host/...). */
+actual fun consumePendingShortcut(): app.home.JoinConfig? =
+    pendingDesktopJoin.also { pendingDesktopJoin = null }
+
+actual fun reducedMotion(): Boolean = false
+
+/** A desktop window is never subject to overscan. */
+actual fun isTelevision(): Boolean = false
+
+actual fun localizedLanguageName(iso6391: String, inLanguage: String): String? {
+    val displayIn = java.util.Locale.forLanguageTag(inLanguage)
+    val locale = java.util.Locale.forLanguageTag(iso6391)
+    val name = locale.getDisplayLanguage(displayIn)
+    if (name.isBlank() || name.equals(iso6391, ignoreCase = true)) return null
+    return name.replaceFirstChar { it.titlecase(displayIn) }
+}

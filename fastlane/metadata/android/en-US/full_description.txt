@@ -1,0 +1,21 @@
+<p>Synkplay keeps a video playing at the same second on everyone's screen. Pause, and it pauses for the whole room. Seek, and everyone lands in the same place. It is an unofficial client for <a href='https://syncplay.pl/' target='_blank' rel='nofollow'>Syncplay</a>, and it speaks the same protocol as the desktop client, so you can watch with people running either one.</p>
+
+<p>Play files from your own device, or paste a link. The video player is built in, with several engines to choose from: mpv, ExoPlayer and the experimental KitePlayer. Between them they cover nearly every container and codec, with external subtitles, chapters and picture in picture.</p>
+
+<p><b>What it does</b></p>
+<ul>
+<li>Synchronised play, pause and seek with everyone in the room.</li>
+<li>Chat, with GIFs, while you watch.</li>
+<li>A shared playlist the whole room moves through together.</li>
+<li>Subtitle search and download from OpenSubtitles, plus your own subtitle files.</li>
+<li>Host your own server from the app, with no account and no setup.</li>
+<li>Managed rooms, where one person holds the controls.</li>
+<li>Picture in picture, so the video stays while you do something else.</li>
+<li>Themes you can build yourself, and a settings screen that lets you tune almost everything.</li>
+<li>Eight languages, and more through Weblate.</li>
+</ul>
+
+<p><b>Privacy</b></p>
+<p>No account, no analytics, no advertising. The app talks to the server you choose to join, and to a service only when you use the feature that needs it.</p>
+
+<p>Free software under the AGPL 3.0. The source is at <a href='https://github.com/yuroyami/syncplay-mobile' target='_blank' rel='nofollow'>github.com/yuroyami/syncplay-mobile</a>.</p>

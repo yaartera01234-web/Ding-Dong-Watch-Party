@@ -1,0 +1,33 @@
+<resources>
+    <!-- Names that are the same in every language, so they are never translated.
+         The generator reads elements in order, so every <string> comes before every list. -->
+
+    <string name="uisetting_categ_mpv">mpv</string>
+    <string name="uisetting_categ_exo">Exoplayer</string>
+    <string name="uisetting_categ_vlc">VLC</string>
+
+    <!-- Language names in their own script. Each one must sit at the same index as its code
+         in language_codes below. -->
+    <string-array name="language_names">
+        <item>العربية</item>
+        <item>English</item>
+        <item>español</item>
+        <item>Français</item>
+        <item>Deutsch</item>
+        <item>Polski</item>
+        <item>Pусский</item>
+        <item>中文</item>
+    </string-array>
+
+    <!-- ISO 639-1 codes, in the same order as language_names. -->
+    <string-array name="language_codes">
+        <item>ar</item>
+        <item>en</item>
+        <item>es</item>
+        <item>fr</item>
+        <item>de</item>
+        <item>pl</item>
+        <item>ru</item>
+        <item>zh</item>
+    </string-array>
+</resources>

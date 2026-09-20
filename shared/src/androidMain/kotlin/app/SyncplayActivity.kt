@@ -1,0 +1,563 @@
+package app
+
+import android.app.Activity
+import android.app.PendingIntent
+import android.app.PendingIntent.FLAG_IMMUTABLE
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.view.KeyEvent
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContract
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.LaunchedEffect
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
+import app.home.HomeViewmodel
+import app.home.InviteLink
+import app.home.JoinConfig
+import app.i18n.Localization
+import app.player.Playback
+import app.player.exo.ExoImpl
+import app.preferences.Preferences.DISPLAY_LANG
+import app.preferences.arePreferencesLoaded
+import app.preferences.Preferences.SUBTITLE_SIZE
+import app.preferences.value
+import app.room.RoomViewmodel
+import app.utils.applyActivityUiProperties
+import app.utils.bindWatchdog
+import app.utils.changeLanguage
+import app.utils.loggy
+import app.utils.maskTransientBarAnimations
+import app.utils.platformCallback
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.util.Locale
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import java.lang.ref.WeakReference
+import android.graphics.Rect
+import androidx.core.content.ContextCompat
+import app.room.VideoBounds
+
+/**
+ * Main Activity for the Syncplay Android application.
+ *
+ * This is a single-activity app - all navigation is handled within Compose.
+ */
+class SyncplayActivity : ComponentActivity() {
+
+    lateinit var globalViewmodel: SyncplayViewmodel
+
+    val homeViewmodel: HomeViewmodel?
+        get() = if (::globalViewmodel.isInitialized) globalViewmodel.homeWeakRef?.get() else null
+
+    val roomViewmodel: RoomViewmodel?
+        get() = if (::globalViewmodel.isInitialized) globalViewmodel.roomWeakRef?.get() else null
+
+
+    /**
+     * Called when the activity is first created.
+     *
+     * Performs initialization including:
+     * - Installing splash screen
+     * - Configuring transparent system bars and edge-to-edge layout
+     * - Setting up platform callback implementation
+     * - Launching Compose UI
+     * - Processing shortcut intents
+     */
+    @Suppress("DEPRECATION")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Cold starts only. It holds while preferences are still being read, so no screen is
+        // ever drawn against defaults that are about to change.
+        installSplashScreen().setKeepOnScreenCondition { !arePreferencesLoaded }
+
+        /** Communicates the lifecycle with our common code */
+        bindWatchdog()
+
+        super.onCreate(savedInstanceState)
+
+        /** Install crash handler early so it catches everything after this point */
+        CrashHandler.install()
+
+        /** Tweaking window UI decor (transparent system bars, edge-to-edge) */
+        applyActivityUiProperties()
+        maskTransientBarAnimations()
+
+        /** Binding common logic with platform logic. Held weakly: the callback outlives this
+         * Activity, which is recreated on a theme, locale or font-size change. */
+        platformCallback = AndroidPlatformCallback(WeakReference(this))
+
+        /****** Composing UI using Jetpack Compose *******/
+        setContent {
+            coil3.compose.setSingletonImageLoaderFactory { context ->
+                coil3.ImageLoader.Builder(context)
+                    .components {
+                        if (Build.VERSION.SDK_INT >= 28) {
+                            add(coil3.gif.AnimatedImageDecoder.Factory())
+                        } else {
+                            add(coil3.gif.GifDecoder.Factory())
+                        }
+                    }
+                    .build()
+            }
+
+            /* Status bar icon color follows the theme: a light theme gets dark icons and the
+             * reverse. The old hardcoded `false` left white-on-white icons on Daylight. */
+            var composedViewmodel by remember { mutableStateOf<SyncplayViewmodel?>(null) }
+            val activeTheme = composedViewmodel?.currentTheme?.collectAsState()?.value
+            LaunchedEffect(activeTheme?.isDark) {
+                WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars =
+                    activeTheme?.isDark == false
+            }
+
+            //MainUI
+            Box {
+                AdamScreen(
+                    onGlobalViewmodel = {
+                        globalViewmodel = it
+                        composedViewmodel = it
+                    }
+                )
+
+                CrashOverlay()
+            }
+        }
+
+        // The room's own words for the two picture-in-picture actions, resolved once.
+        lifecycleScope.launch {
+            runCatching {
+                pipPauseLabel = Localization.strings.roomPause
+                pipPlayLabel = Localization.strings.roomPlay
+            }
+        }
+
+        /** A shortcut, or an invite link someone tapped */
+        handleLaunchIntent(intent)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    /**
+     * Applies the saved language before the base context is attached.
+     *
+     * This ensures the correct locale is used when inflating resources.
+     */
+    /** A link that arrives while the app is already running reaches the same handler. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLaunchIntent(intent)
+    }
+
+    /**
+     * Joins from a launcher shortcut or an invite link. Both are outside input: the room name and
+     * the addresses go through the same caps and trimming the join form applies.
+     */
+    private fun handleLaunchIntent(intent: Intent?) {
+        intent ?: return
+        val config = when {
+            intent.getBooleanExtra("quickLaunch", false) -> quickLaunchConfig(intent) ?: return
+            intent.action == Intent.ACTION_VIEW -> intent.dataString?.let { InviteLink.parse(it) } ?: return
+            else -> return
+        }
+        lifecycleScope.launch {
+            homeViewmodel?.joinRoom(config)
+        }
+    }
+
+    /**
+     * The join behind a launcher shortcut.
+     *
+     * This activity is exported, so any installed app can send these extras and ask us to join a
+     * server of its choosing. They are only honoured when a shortcut we ourselves saved carries
+     * exactly that configuration: shortcut ids are per-package, so nobody else can plant one. The
+     * fields then go through the same caps as an invite link.
+     */
+    private fun quickLaunchConfig(intent: Intent): JoinConfig? {
+        val name = intent.getStringExtra("name") ?: ""
+        val room = intent.getStringExtra("room") ?: ""
+        val ip = intent.getStringExtra("serverip") ?: ""
+        val port = intent.getIntExtra("serverport", JoinConfig().port)
+
+        /* The saved shortcut is the authority, not the intent. It has to still exist and still
+         * be enabled, and what we join with comes out of it: the caller supplied the id we look
+         * up, so letting the caller also supply the fields would make the check decorative.
+         * Erasing shortcuts leaves the pinned ones on the launcher, greyed out; tapping one
+         * used to join anyway. */
+        val saved = runCatching {
+            ShortcutManagerCompat.getShortcuts(
+                this,
+                ShortcutManagerCompat.FLAG_MATCH_DYNAMIC or ShortcutManagerCompat.FLAG_MATCH_PINNED,
+            ).firstOrNull { it.id == "$name$room$ip$port" && it.isEnabled }
+        }.getOrNull()
+
+        if (saved == null) {
+            loggy("Ignored a quick-launch intent that matches no enabled shortcut of ours")
+            return null
+        }
+        val extras = saved.intent.extras ?: return null
+        return InviteLink.sanitize(
+            JoinConfig(
+                user = extras.getString("name") ?: "",
+                room = extras.getString("room") ?: "",
+                ip = extras.getString("serverip") ?: "",
+                port = extras.getInt("serverport", JoinConfig().port),
+                pw = extras.getString("serverpw") ?: "",
+            )
+        )
+    }
+
+    override fun attachBaseContext(newBase: Context?) {
+        /** Applying the saved language; blank means the device's own, so nothing is forced. */
+        val lang = runCatching { DISPLAY_LANG.value() }.getOrDefault(DISPLAY_LANG.default)
+        super.attachBaseContext(if (lang.isBlank()) newBase else newBase!!.changeLanguage(lang))
+    }
+
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Reapply a chosen locale after orientation changes; a blank choice follows the device.
+        // TODO: migrate to AppCompatDelegate.setApplicationLocales for per-app language on Android 13+.
+        val lang = DISPLAY_LANG.value()
+        if (lang.isBlank()) return
+        val locale = Locale.Builder().setLanguage(lang).build()
+        Locale.setDefault(locale)
+        val config = resources.configuration
+        config.setLocale(locale)
+        @Suppress("DEPRECATION")
+        resources.updateConfiguration(config, resources.displayMetrics)
+    }
+
+    /**
+     * Called when the activity is becoming visible to the user.
+     *
+     * Loads subtitle appearance settings for the player.
+     * Follows onCreate() and precedes activity results and onResume().
+     */
+    override fun onStart() {
+        super.onStart()
+
+        /* Registered here and not in onResume: entering picture-in-picture pauses the activity
+         * while leaving it started, so an onResume/onPause pairing tore the receiver down at the
+         * exact moment the PiP window's own play and pause buttons started firing at it.
+         *
+         * Not exported on every API level, not only on 13 and up: below Tiramisu the
+         * two-argument call registers an exported receiver, so any app on the device could
+         * broadcast the action and pause the room. ContextCompat carries the flag back. */
+        ContextCompat.registerReceiver(
+            this,
+            pipBroadcastReceiver,
+            IntentFilter(PIP_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        /* Loading subtitle appearance */
+        lifecycleScope.launch(Dispatchers.Main) {
+            val room = roomViewmodel ?: return@launch
+            if (!room.playerManager.isPlayerReady.value) return@launch
+            val ccsize = SUBTITLE_SIZE.value()
+            (room.player as? ExoImpl)?.retweakSubtitleAppearance(ccsize.toFloat())
+        }
+    }
+
+    /**
+     * Handles Picture-in-Picture mode state changes.
+     *
+     * Updates UI state when entering/exiting PiP mode.
+     *
+     * @param isInPictureInPictureMode Whether PiP mode is active
+     * @param newConfig The new configuration after the PiP change
+     */
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        roomViewmodel?.uiState?.hasEnteredPipMode?.value = isInPictureInPictureMode
+    }
+
+    /**
+     * Enters Picture-in-Picture mode if supported (Android 8.0+).
+     *
+     * Updates PiP parameters and enters PiP, hiding the HUD controls.
+     */
+    internal fun initiatePIPmode() {
+        roomViewmodel?.uiState?.hasEnteredPipMode?.value = true
+
+        val params = buildPiPParams(roomViewmodel?.playerManager?.isNowPlaying?.value == true)
+        runCatching {
+            enterPictureInPictureMode(params)
+        }
+        roomViewmodel?.uiState?.visibleHUD?.value = false
+    }
+
+    /**
+     * Builds PiP parameters with play/pause remote action.
+     *
+     * Creates a PendingIntent that carries the intended action (0=pause, 1=play)
+     * so the broadcast receiver knows what to do.
+     */
+    /** Resolved once the loader answers; the English words stand in only until then. */
+    private var pipPauseLabel: String = "Pause"
+    private var pipPlayLabel: String = "Play"
+
+    private fun buildPiPParams(isPlaying: Boolean = false): PictureInPictureParams {
+
+        // When playing → show pause button (action=0 means pause)
+        // When paused  → show play button  (action=1 means play)
+        val actionValue = if (isPlaying) 0 else 1
+        // Explicit and package-bound: the receiver is not exported, so no other app can press it.
+        val intent = Intent(PIP_ACTION).setPackage(packageName).putExtra("pause_zero_play_one", actionValue)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, 6969 + actionValue, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or FLAG_IMMUTABLE
+        )
+
+        // The labels are the room's own words for the same two actions, so the window does not
+        // switch to English the moment it shrinks.
+        val label = if (isPlaying) pipPauseLabel else pipPlayLabel
+        val action = RemoteAction(
+            Icon.createWithResource(
+                this,
+                if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+            ),
+            label,
+            label,
+            pendingIntent
+        )
+
+        val hasVideo = roomViewmodel?.hasVideo?.value == true
+        val builder = PictureInPictureParams.Builder()
+            .setActions(if (hasVideo) listOf(action) else listOf())
+        if (hasVideo) {
+            // A video-shaped window instead of the system's square default.
+            builder.setAspectRatio(android.util.Rational(16, 9))
+            // The picture's own rectangle, so entering and leaving morphs out of the video rather
+            // than appearing from nowhere. The room reports it as it lays the video layer out.
+            if (VideoBounds.known) {
+                builder.setSourceRectHint(Rect(VideoBounds.left, VideoBounds.top, VideoBounds.right, VideoBounds.bottom))
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Home while playing keeps the picture on screen, the way video apps do.
+                builder.setAutoEnterEnabled(isPlaying)
+            }
+        }
+        return builder.build()
+    }
+
+    /**
+     * Updates the PiP parameters on the activity to reflect current playback state. Reads the
+     * engine's reported state, never a live probe (rule 5 of the ledger).
+     */
+    internal fun updatePiPParams() {
+        val playing = roomViewmodel?.playerManager?.isNowPlaying?.value == true
+        runCatching {
+            setPictureInPictureParams(buildPiPParams(playing))
+        }
+    }
+
+    /**
+     * Broadcast receiver for handling Picture-in-Picture control actions.
+     *
+     * Listens for "pip" action broadcasts and controls playback accordingly.
+     */
+    private val pipBroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent?.let { intnt ->
+                if (intnt.action == PIP_ACTION) {
+                    val pausePlayValue = intnt.getIntExtra("pause_zero_play_one", -1)
+
+                    if (pausePlayValue == 1) {
+                        roomViewmodel?.dispatcher?.controlPlayback(Playback.PLAY, true)
+                    } else if (pausePlayValue == 0) {
+                        roomViewmodel?.dispatcher?.controlPlayback(Playback.PAUSE, true)
+                    }
+
+                    // Refresh the PiP action button to reflect new state
+                    updatePiPParams()
+                }
+            }
+        }
+    }
+
+    /**
+     * Called when the activity comes to the foreground.
+     *
+     * Registers the PiP broadcast receiver and reapplies player track choices.
+     */
+    override fun onResume() {
+        super.onResume()
+        /** Applying track choices again so the player doesn't forget about track choices **/
+        lifecycleScope.launch {
+            val room = roomViewmodel ?: return@launch
+            if (room.playerManager.isPlayerReady.value) room.player.reapplyTrackChoices()
+        }
+    }
+
+    /**
+     * Handles D-pad and media button key events for Android TV / Google TV.
+     *
+     * Media buttons always control playback. When a video is loaded and the HUD is hidden,
+     * D-pad keys control playback (left/right = seek, center = play/pause) and reveal the HUD.
+     * When the HUD is visible, D-pad events pass through to Compose for focus navigation.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        val vm = roomViewmodel
+
+        // Media buttons: always handle when in room
+        if (vm != null) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    if (vm.playerManager.hasVideo.value) {
+                        // The app's own intent, not a live engine probe: mid-buffer a probe says
+                        // "not playing" and the key would unpause a room that just paused.
+                        vm.dispatcher.controlPlayback(
+                            if (vm.protocol.expectedPlaying) Playback.PAUSE else Playback.PLAY, true
+                        )
+                    }
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                    vm.dispatcher.controlPlayback(Playback.PLAY, true)
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    vm.dispatcher.controlPlayback(Playback.PAUSE, true)
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                    vm.dispatcher.seekFrwrd()
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                    vm.dispatcher.seekBckwd()
+                    return true
+                }
+            }
+
+            // D-pad: only intercept when HUD is hidden and video is loaded
+            val hasVideo = vm.playerManager.hasVideo.value
+            val hudVisible = vm.uiState.visibleHUD.value
+
+            if (hasVideo && !hudVisible) {
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        vm.dispatcher.controlPlayback(
+                            if (vm.protocol.expectedPlaying) Playback.PAUSE else Playback.PLAY, true
+                        )
+                        vm.uiState.visibleHUD.value = true
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        vm.dispatcher.seekBckwd()
+                        vm.uiState.visibleHUD.value = true
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        vm.dispatcher.seekFrwrd()
+                        vm.uiState.visibleHUD.value = true
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        vm.uiState.visibleHUD.value = true
+                        return true
+                    }
+                }
+            }
+        }
+
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        runCatching { unregisterReceiver(pipBroadcastReceiver) }
+    }
+
+    private companion object {
+        const val PIP_ACTION = "app.syncplay.PIP_PLAYBACK"
+    }
+
+    /* A refusal is respected quietly: the old toast fired on every cold start, in English, and
+     * promised playback controls the notification does not carry. */
+    private var notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    /**
+     * Callback indirection for the "custom picker" (chooser-of-file-managers) flow. The
+     * PlatformCallback override stores the caller's `onResult` here, then launches
+     * [systemFilePickerLauncher]. When the picker returns, the result handler invokes and
+     * clears this callback.
+     */
+    internal var pendingSystemFilePickerCallback: ((String?) -> Unit)? = null
+
+    /**
+     * "Custom picker" launcher — fires `ACTION_GET_CONTENT` wrapped in [Intent.createChooser] so
+     * the user is presented with a selector of every installed file manager / explorer / cloud
+     * app that registered as a content source (FX, MiXplorer, Solid Explorer, Drive, Dropbox,
+     * LocalSend, etc.), in addition to the system Documents UI.
+     *
+     * This complements FileKit's default launcher (which goes straight to the SAF Documents UI
+     * via `ACTION_OPEN_DOCUMENT` with an extension-derived MIME filter). Two reasons to offer it:
+     *
+     *  1. **SMB / cloud DocumentsProviders**: some providers report files with opaque MIME types
+     *     (`application/octet-stream`) that FileKit's extension filter hides; routing through a
+     *     third-party file manager bypasses that filter.
+     *  2. **User preference**: some users keep their media indexed in a specific file manager
+     *     and want to browse there directly.
+     *
+     * Note: an `ACTION_GET_CONTENT` grant is usually not persistable, unlike an
+     * `ACTION_OPEN_DOCUMENT` one, so the result handler asks for a lasting grant and carries on
+     * when the provider refuses. The URI is readable for this session either way, which is all
+     * immediate playback needs; the FileKit path remains the one to use for playlist entries that
+     * have to survive a restart.
+     */
+    internal val systemFilePickerLauncher = registerForActivityResult(
+        object : ActivityResultContract<String, Uri?>() {
+            override fun createIntent(context: Context, input: String): Intent {
+                val pick = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = input
+                }
+                // Passing null title lets the system pick a sensible default ("Open with …").
+                return Intent.createChooser(pick, null)
+            }
+
+            override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+                if (resultCode != Activity.RESULT_OK) return null
+                return intent?.data
+            }
+        }
+    ) { uri ->
+        val callback = pendingSystemFilePickerCallback
+        pendingSystemFilePickerCallback = null
+        // A GET_CONTENT grant usually cannot be kept, but some providers do allow it, and the ones
+        // that do give a playlist entry that still opens after a restart. Asking costs nothing:
+        // a provider that refuses throws, and the grant stays good for this session either way.
+        if (uri != null) {
+            runCatching {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+        callback?.invoke(uri?.toString())
+    }
+
+}

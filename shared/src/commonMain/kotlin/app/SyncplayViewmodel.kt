@@ -1,0 +1,146 @@
+package app
+
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import app.home.HomeViewmodel
+import app.preferences.Preferences.CURRENT_THEME
+import app.theme.migrated
+import app.preferences.Preferences.CUSTOM_THEMES
+import app.preferences.Preferences.USER_ID
+import app.preferences.flow
+import app.preferences.set
+import app.preferences.value
+import app.room.RoomViewmodel
+import app.theme.SaveableTheme
+import app.theme.SaveableTheme.Companion.toTheme
+import app.theme.defaultTheme
+import app.utils.WeakRef
+import app.utils.ioDispatcher
+import kotlinx.coroutines.flow.SharingStarted.Companion.Eagerly
+import kotlinx.coroutines.flow.SharingStarted.Companion.Lazily
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.uuid.Uuid
+
+/**
+ * Application-level ViewModel for managing global Syncplay state.
+ *
+ * Maintains app-wide settings, theme configuration, and tracks high-level
+ * user interaction state that persists across screen navigation.
+ */
+class SyncplayViewmodel : ViewModel() {
+
+    init {
+        app.utils.cleanupOldLogs()
+    }
+
+    /** The navigation backstack */
+    val backstack = mutableStateListOf<Screen>(Screen.Home)
+
+    /**
+     * Whether the shared playlist feature is enabled.
+     *
+     * When disabled, all shared playlist functionality should be hidden/disabled
+     * throughout the UI, and this state should be communicated to the server.
+     *
+     * TODO: Advertise this to server, disable shared-playlist-related functionality everywhere when this is off
+     */
+    val isSharedPlaylistEnabled = mutableStateOf(true)
+
+    /**
+     * Tracks whether the user has entered a room at least once during this app session.
+     *
+     * Used for UI/UX decisions like adjusting first-time behavior.
+     */
+    var hasEnteredRoomOnce = false
+
+    /** Weak References for our child viewmodels so we can access them from SyncplayActivity
+     * but also not prevent them from getting garbage-collected when they're finalized (invalidated and cleared)
+     */
+    var homeWeakRef: WeakRef<HomeViewmodel>? = null
+    var roomWeakRef: WeakRef<RoomViewmodel>? = null
+
+    /**
+     * The currently active theme.
+     */
+    val currentTheme: StateFlow<SaveableTheme> = CURRENT_THEME.flow()
+        .flowOn(ioDispatcher)
+        .map { it.toTheme().migrated() }
+        .stateIn(scope = viewModelScope, started = Eagerly, defaultTheme)
+
+    val customThemes = CUSTOM_THEMES.flow()
+        .flowOn(ioDispatcher)
+        .map { stringSet ->
+            stringSet.map { it.toTheme() }.toList()
+        }
+        .stateIn(scope = viewModelScope, started = Lazily, emptyList())
+
+
+    fun changeTheme(theme: SaveableTheme) {
+        viewModelScope.launch(ioDispatcher) {
+            CURRENT_THEME.set(theme.asString())
+        }
+    }
+
+    /**
+     * @return true if theme is saved, false if it already exists
+     */
+    suspend fun saveNewTheme(theme: SaveableTheme): Boolean {
+        return withContext(ioDispatcher) {
+            val themeJson = theme.asString()
+
+            val customThemes = CUSTOM_THEMES.value().toMutableSet()
+            if (customThemes.contains(themeJson)) return@withContext false
+
+            customThemes.add(themeJson)
+            CUSTOM_THEMES.set(customThemes)
+
+            changeTheme(theme)
+            return@withContext true
+        }
+    }
+
+    fun deleteTheme(theme: SaveableTheme) {
+        viewModelScope.launch(ioDispatcher) {
+            val themeJson = theme.asString()
+            val customThemes = CUSTOM_THEMES.value().toMutableSet()
+            customThemes.remove(themeJson)
+            CUSTOM_THEMES.set(customThemes)
+
+            // Deleting the active theme falls back to the first remaining custom one, else the default.
+            if (currentTheme.value == theme) {
+                changeTheme(customThemes.firstOrNull()?.toTheme() ?: defaultTheme)
+            }
+        }
+    }
+
+    /**
+     * Replaces [old] with [new] in one datastore write, so a fast save cannot lose the theme
+     * between a delete and an add. Refused when [new] already exists as another theme.
+     */
+    suspend fun replaceTheme(old: SaveableTheme, new: SaveableTheme): Boolean = withContext(ioDispatcher) {
+        val oldJson = old.asString()
+        val newJson = new.asString()
+        val customThemes = CUSTOM_THEMES.value().toMutableSet()
+        if (newJson != oldJson && newJson in customThemes) return@withContext false
+        customThemes.remove(oldJson)
+        customThemes.add(newJson)
+        CUSTOM_THEMES.set(customThemes)
+        changeTheme(new)
+        true
+    }
+
+    init {
+        //Generate a unique ID for the user and persist, to use it for Klipy API only.
+        viewModelScope.launch(ioDispatcher) {
+            val userId = USER_ID.value()
+            if (userId == null) USER_ID.set(Uuid.generateV7().toHexString())
+        }
+    }
+}
