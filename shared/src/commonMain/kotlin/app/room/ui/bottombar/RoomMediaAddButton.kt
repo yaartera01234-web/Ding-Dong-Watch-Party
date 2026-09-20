@@ -19,6 +19,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import app.uicomponents.controls.Text
 import app.uicomponents.controls.Rule
 import app.uicomponents.controls.CloseGlyph
