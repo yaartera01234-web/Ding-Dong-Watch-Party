@@ -123,6 +123,16 @@ fun RoomChatSection(modifier: Modifier) {
                 )
             }
 
+            // The log stays on screen; the GIF drawer unfolds under it, half and half.
+            ChatBox(
+                viewmodel = viewmodel,
+                modifier = Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(cutoutInsets).padding(horizontal = 8.dp)
+                    .onSizeChanged { size ->
+                        viewmodel.uiState.chatMediaSizeDp.value = chatMediaCellSize(with(density) { size.width.toDp() }).value
+                    },
+                isHUDVisible = isHUDVisible,
+            )
+
             if (gifPanelVisible) {
               if (SyncplayMobile.shared.KiteBuildConfig.KLIPY_API_KEY.isBlank()) {
                 DingDongGifGrid(
@@ -148,15 +158,6 @@ fun RoomChatSection(modifier: Modifier) {
                     isHUDVisible = isHUDVisible,
                 )
               }
-            } else {
-                ChatBox(
-                    viewmodel = viewmodel,
-                    modifier = Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(cutoutInsets).padding(horizontal = 8.dp)
-                        .onSizeChanged { size ->
-                            viewmodel.uiState.chatMediaSizeDp.value = chatMediaCellSize(with(density) { size.width.toDp() }).value
-                        },
-                    isHUDVisible = isHUDVisible,
-                )
             }
 
             if (tallChat) {

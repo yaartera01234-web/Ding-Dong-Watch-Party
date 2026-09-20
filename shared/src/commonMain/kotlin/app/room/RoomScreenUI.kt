@@ -149,12 +149,7 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
     ) {
         // Portrait phones keep the picture as a top mini player; the chat owns the rest.
         val videoArea = if (tall) {
-            Modifier
-                .padding(start = 12.dp, end = 12.dp, top = 10.dp)
-                .fillMaxWidth()
-                .fillMaxHeight(0.40f)
-                .clip(RoundedCornerShape(22.dp))
-                .border(1.dp, DD.violet.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
+            Modifier.fillMaxWidth().fillMaxHeight(0.40f)
         } else {
             Modifier.fillMaxSize()
         }
