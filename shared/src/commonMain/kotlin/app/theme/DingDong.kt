@@ -44,15 +44,15 @@ fun DDAmbient() {
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier.size(280.dp).offset(x = (-90).dp, y = (-80).dp)
-                .background(Brush.radialGradient(listOf(pink.copy(0.14f), Color.Transparent)), CircleShape)
+                .background(Brush.radialGradient(listOf(DD.pink.copy(0.14f), Color.Transparent)), CircleShape)
         )
         Box(
             Modifier.size(320.dp).align(Alignment.CenterEnd).offset(x = 130.dp, y = (-40).dp)
-                .background(Brush.radialGradient(listOf(violet.copy(0.16f), Color.Transparent)), CircleShape)
+                .background(Brush.radialGradient(listOf(DD.violet.copy(0.16f), Color.Transparent)), CircleShape)
         )
         Box(
             Modifier.size(260.dp).align(Alignment.BottomStart).offset(x = (-70).dp, y = 90.dp)
-                .background(Brush.radialGradient(listOf(orchid.copy(0.10f), Color.Transparent)), CircleShape)
+                .background(Brush.radialGradient(listOf(DD.orchid.copy(0.10f), Color.Transparent)), CircleShape)
         )
     }
 }
