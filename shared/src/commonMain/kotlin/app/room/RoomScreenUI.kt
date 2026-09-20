@@ -406,7 +406,7 @@ private fun RoomHud(
             status = if (soloMode || !playerIsReady) null else ({ RoomStatusInfoSection() }),
             // Portrait keeps only the picture, its status line and the chat; the rail and the
             // big centre transport belong to the landscape arrangement.
-            rail = if (tall) null else { RoomRail(horizontal = railHorizontal) },
+            rail = if (tall) null else { { RoomRail(horizontal = railHorizontal) } },
             chat = if (soloMode) null else ({ RoomChatSection(modifier = Modifier.fillMaxSize()) }),
             // Room creation waits for the previous engine's teardown. Until it publishes
             // the new player, keep chat/navigation usable but do not compose player tools.
