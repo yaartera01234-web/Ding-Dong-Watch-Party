@@ -34,8 +34,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -254,7 +254,7 @@ fun HomeScreenUI(viewmodel: HomeViewmodel) {
                     Modifier
                         .size(20.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (ready) DD.grad else Brush.solid(Color.Transparent))
+                        .background(if (ready) DD.grad else SolidColor(Color.Transparent))
                         .border(1.dp, if (ready) Color.Transparent else DD.line, RoundedCornerShape(6.dp))
                         .clickable { ready = !ready },
                     contentAlignment = Alignment.Center,
