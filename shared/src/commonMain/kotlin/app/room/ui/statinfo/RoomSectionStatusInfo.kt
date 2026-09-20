@@ -1,6 +1,11 @@
 package app.room.ui.statinfo
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.platform.LocalWindowInfo
+import app.preferences.Preferences
+import app.preferences.set
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
@@ -14,6 +19,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -83,6 +89,9 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         ConnectionState.SCHEDULING_RECONNECT -> strings.roomReconnecting
         ConnectionState.DISCONNECTED -> strings.roomPingDisconnected
     }
+    // Portrait phones get the Fullscreen key at the end of the line, like the design shot.
+    val container = LocalWindowInfo.current.containerSize
+    val portrait = container.height > container.width
     val media by viewmodel.playerManager.media.collectAsState()
     val episode = remember(media?.fileName) {
         media?.fileName?.lowercase()?.let { EPISODE.find(it) }?.let { m ->
@@ -136,6 +145,18 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         if (episode != null) {
             RowGap(Space.gapTight + 2.dp)
             Tag(episode)
+        }
+        if (portrait) {
+            RowGap(Space.gapTight)
+            Box(
+                Modifier
+                    .clip(Radius.panelShape)
+                    .border(Space.hair, p.rule, Radius.panelShape)
+                    .clickable { Preferences.ROOM_ALLOW_PORTRAIT.set(false) }
+                    .padding(horizontal = Space.gap, vertical = 3.dp),
+            ) {
+                Text("Fullscreen ⛶", style = Type.value, color = p.ink)
+            }
         }
     }
 }

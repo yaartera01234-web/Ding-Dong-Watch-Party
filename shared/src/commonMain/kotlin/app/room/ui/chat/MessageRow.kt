@@ -41,6 +41,7 @@ import app.theme.Type
 import app.theme.palette
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import app.LocalRoomViewmodel
@@ -76,6 +77,7 @@ fun MessageRow(
     modifier: Modifier = Modifier,
     imageAlpha: Float = 1f,
     announce: Boolean = false,
+    carded: Boolean = false,
     onSwipeToReply: (() -> Unit)? = null,
 ) {
     val p = palette
@@ -91,7 +93,19 @@ fun MessageRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp)
+            // Portrait phones draw the log as separate rounded cards, like the design shots;
+            // landscape keeps the bare fading lines over the picture.
+            .then(
+                if (carded) {
+                    Modifier
+                        .padding(vertical = 3.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF1B1228))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                } else {
+                    Modifier.padding(vertical = 2.dp)
+                }
+            )
             // Swipe horizontally across a line to quote it in the composer (Ding Dong swipe-reply).
             // Only user lines can be replied to; system/event lines carry no sender. Observes the
             // pointer without consuming, so vertical chat scrolling is untouched.
@@ -145,6 +159,16 @@ fun MessageRow(
         verticalAlignment = Alignment.Top,
     ) {
         if (message.sender == null) {
+            if (carded) {
+                OutlinedText(
+                    text = message.content,
+                    style = body,
+                    color = if (message.isError) chatPalette.errormsgColor else chatPalette.systemmsgColor,
+                    outline = style.outline,
+                    shadow = style.shadow,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
             Row(Modifier.weight(1f).height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(2.dp).fillMaxHeight().background(if (message.isError) p.bad else p.accent))
                 OutlinedText(

@@ -35,6 +35,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.graphics.Color
+import app.uicomponents.controls.Icon
+import app.uicomponents.controls.RowGap
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
@@ -166,7 +171,17 @@ private val MorphWidth = 340.dp
 @Composable
 fun AddVideoButton(modifier: Modifier, expanded: Boolean, onClick: () -> Unit) {
     if (!expanded) {
-        GlyphButton(Icons.Filled.AddToQueue, name = strings.roomButtonDescAdd, modifier = modifier, size = Space.glyphLarge, onClick = onClick)
+        // The gradient pill keeps its label while a file plays, like the design shot.
+        Row(
+            modifier
+                .heightIn(min = 44.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.AddToQueue, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            RowGap(Space.gapTight)
+            Text(strings.roomButtonDescAdd, style = Type.label, color = Color.White, maxLines = 1)
+        }
     } else {
         PrimaryAction(strings.roomButtonDescAdd, onClick = onClick, modifier = modifier.width(180.dp))
     }

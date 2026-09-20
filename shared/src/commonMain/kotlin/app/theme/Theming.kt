@@ -27,8 +27,8 @@ object Theming {
     val SP_GRADIENT = listOf(NeoSP1, NeoSP2, NeoSP3)
 
     /* ── Semantic: chat message color defaults (user-overridable prefs) ── */
-    val MSG_SELF_TAG = Color(0xFFFF5A5A)
-    val MSG_FRIEND_TAG = Color(0xFF7FA7E8)
+    val MSG_SELF_TAG = Color(0xFFFF5A9E)
+    val MSG_FRIEND_TAG = Color(0xFFFF2E9A)
     val MSG_SYSTEM = Color(0xFFE6E6E6)
     val MSG_ERROR = Color(0xFFFF6E6E)
     val MSG_CHAT = Color.White

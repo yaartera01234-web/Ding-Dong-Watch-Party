@@ -4,6 +4,17 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
+import app.theme.DD
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -217,36 +228,63 @@ fun ChatComposer(
                 Text("✕", style = Type.note, color = p.accent, modifier = Modifier.padding(start = Space.gapTight))
             }
         }
-        Row(modifier.heightIn(min = Space.row), verticalAlignment = Alignment.CenterVertically) {
-        GlyphButton(
-            icon = Icons.Outlined.GifBox,
-            name = strings.roomGifOpen,
-            tint = if (gifPanelVisible) p.accent else p.inkDim,
-        ) { viewmodel.uiState.gifPanelVisible.value = !gifPanelVisible }
-        Field(
-            value = msg,
-            onValueChange = { viewmodel.uiState.msg.value = it },
-            // Not the outer modifier: that would re-apply the shield and the insets to the field.
-            modifier = Modifier.weight(1f),
-            placeholder = strings.roomChatInput,
-            imeAction = if (keyboardSends) ImeAction.Send else ImeAction.Done,
-            onImeAction = {
-                focusManager.clearFocus()
-                if (keyboardSends) send()
-            },
-            textStyle = Type.note,
-            focusRequester = viewmodel.uiState.chatFocus,
-            name = strings.roomChatInput,
-        )
-        GlyphButton(
-            icon = SendGlyph,
-            name = strings.roomSend,
-            tint = if (hasText && !gifPanelVisible) p.accent else p.inkFaint,
+        // The Ding Dong composer: an outlined pill with the GIF chip leading and a gradient
+        // send circle trailing, exactly as the design screenshots show it.
+        Row(
+            modifier
+                .heightIn(min = 46.dp)
+                .clip(DD.pillShape)
+                .background(DD.field)
+                .border(1.5.dp, DD.pink.copy(alpha = 0.75f), DD.pillShape)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (gifPanelVisible) return@GlyphButton
-            focusManager.clearFocus()
-            send()
-        }
+            Box(
+                Modifier
+                    .padding(start = 4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (gifPanelVisible) DD.pink else DD.line.copy(alpha = 0.5f))
+                    .clickable { viewmodel.uiState.gifPanelVisible.value = !gifPanelVisible }
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+            ) {
+                Text("GIF", style = Type.note, color = Color.White)
+            }
+            BasicTextField(
+                value = msg,
+                onValueChange = { viewmodel.uiState.msg.value = it },
+                // Not the outer modifier: that would re-apply the shield and the insets to the field.
+                modifier = Modifier.weight(1f).padding(horizontal = 10.dp).focusRequester(viewmodel.uiState.chatFocus),
+                textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
+                keyboardOptions = KeyboardOptions(imeAction = if (keyboardSends) ImeAction.Send else ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onSend = { send() },
+                    onDone = {
+                        focusManager.clearFocus()
+                        if (keyboardSends) send()
+                    },
+                ),
+                decorationBox = { inner ->
+                    Box {
+                        if (msg.isEmpty()) Text("Say something to room...", style = Type.note, color = DD.inkDim)
+                        inner()
+                    }
+                },
+            )
+            Box(
+                Modifier
+                    .padding(end = 2.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(DD.grad)
+                    .clickable {
+                        if (gifPanelVisible) return@clickable
+                        focusManager.clearFocus()
+                        send()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(SendGlyph, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+            }
         }
     }
 }
@@ -269,7 +307,10 @@ fun ChatBox(viewmodel: RoomViewmodel, modifier: Modifier = Modifier, isHUDVisibl
     val fontSize by MSG_FONTSIZE.watchPref()
     val style = MessageStyle(fontSize, outlineThickness.toFloat().takeIf { it > 0f }, shadowOn, chatPalette.includeTimestamp)
 
-    Box(modifier.background(if (hasVideo) Color(50, 50, 50, bgOpacity) else Color.Transparent, Radius.panelShape)) {
+    // Portrait phones draw the log as cards on the page, so no gray panel behind them.
+    val container = LocalWindowInfo.current.containerSize
+    val carded = container.height > container.width
+    Box(modifier.background(if (hasVideo && !carded) Color(50, 50, 50, bgOpacity) else Color.Transparent, Radius.panelShape)) {
         val listState = rememberLazyListState(initialFirstVisibleItemIndex = maxOf(0, messages.size - 1))
         val scope = rememberCoroutineScope()
         /* The list follows the newest line until the reader scrolls it out of view. Only a scroll the
@@ -322,6 +363,7 @@ fun ChatBox(viewmodel: RoomViewmodel, modifier: Modifier = Modifier, isHUDVisibl
                     style = style,
                     imageAlpha = if (isHUDVisible) 1f else 0f,
                     announce = index == messages.lastIndex,
+                    carded = carded,
                     onSwipeToReply = { viewmodel.uiState.chatReplyTarget.value = message },
                 )
             }
