@@ -43,9 +43,9 @@ object AppConfig {
     // The three stops that cover most of the logo's visible sail area, so the wordmark, the
     // launcher icon and the default theme all read as one object. The full five-stop field lives
     // in art/synkplay_logo_palette.md; change the logo art and these move with it.
-    const val TRINITY_1 = 0xFF9879EF  // Gentle ultraviolet (logo stop 25%)
-    const val TRINITY_2 = 0xFFC331D8  // Softened orchid-magenta (logo stop 55%)
-    const val TRINITY_3 = 0xFFD86B75  // Dusty coral (logo stop 88%)
+    const val TRINITY_1 = 0xFFFF4D9E  // Hot pink (Ding Dong gradient start)
+    const val TRINITY_2 = 0xFFB44CE0  // Orchid (Ding Dong gradient mid)
+    const val TRINITY_3 = 0xFF7C3AED  // Violet (Ding Dong gradient end)
 
     /**
      * Every native library the libmpvkt AAR carries. The exoOnly flavor strips them at packaging

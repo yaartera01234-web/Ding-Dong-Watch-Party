@@ -14,6 +14,8 @@ val TRINITY = SaveableTheme(
     primaryColor = Theming.NeoSP1.toArgb(),
     secondaryColor = Theming.NeoSP2.toArgb(),
     tertiaryColor = Theming.NeoSP3.toArgb(),
+    // Deep-purple neutral so the whole surface reads as the Ding Dong night palette, not gray.
+    neutralColor = Color(0xFF3A2B5F).toArgb(),
     contrast = 0.0,
     isDark = true,
     isAMOLED = false,
