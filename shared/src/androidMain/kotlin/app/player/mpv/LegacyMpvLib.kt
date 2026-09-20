@@ -2,8 +2,8 @@ package app.player.mpv
 
 import android.content.Context
 import android.view.Surface
-import is.xyz.mpv.MPV
-import is.xyz.mpv.MPVNode
+import `is`.xyz.mpv.MPV
+import `is`.xyz.mpv.MPVNode
 
 /**
  * LEGACY ENGINE ADAPTER (temporary build for old devices).
