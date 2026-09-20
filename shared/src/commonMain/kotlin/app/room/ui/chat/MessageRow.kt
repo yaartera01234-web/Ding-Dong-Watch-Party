@@ -1,7 +1,7 @@
 package app.room.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalSwipe
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import kotlin.math.abs
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -96,9 +97,21 @@ fun MessageRow(
             .let { m ->
                 if (message.sender != null && onSwipeToReply != null) {
                     m.pointerInput(message.id) {
-                        detectHorizontalSwipe(
-                            onSwipeLeft = { onSwipeToReply() },
-                            onSwipeRight = { onSwipeToReply() },
+                        var totalX = 0f
+                        var fired = false
+                        detectDragGestures(
+                            onHorizontalDrag = { changedX, _ ->
+                                // Accumulate: each callback carries only the per-frame delta.
+                                totalX += changedX
+                                if (!fired && abs(totalX) > 48f) {
+                                    fired = true
+                                    onSwipeToReply()
+                                }
+                                true
+                            },
+                            onVerticalDrag = { _, _ -> false },
+                            onDragEnd = { totalX = 0f; fired = false },
+                            onDragCancel = { totalX = 0f; fired = false },
                         )
                     }
                 } else m
