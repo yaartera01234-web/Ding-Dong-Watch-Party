@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -41,9 +42,10 @@ import app.utils.timestampFromMillis
 private val REACTIONS = listOf("❤️", "🔥", "😂", "💡")
 
 /**
- * The Ding Dong transport: a thin seek line over one row — outlined play/pause key, the
- * reaction pill, the running time — and at the end the control panel and the gradient
- * Add Media key, as the landscape design shot shows.
+ * The transport. Landscape gets the full strip — thin seek line over one row with the outlined
+ * play/pause key, the reaction pill, the running time, the control panel and the gradient Add
+ * Media key. Portrait keeps the mini player clean: just the play key, the time and Add Media,
+ * sitting at the foot of the picture like the design shot.
  */
 @Composable
 fun RoomBottomBarSection(modifier: Modifier) {
@@ -52,65 +54,21 @@ fun RoomBottomBarSection(modifier: Modifier) {
     val playing by viewmodel.playerManager.isNowPlaying.collectAsState()
     val positionMs by viewmodel.playerManager.timeCurrentMillis.collectAsState()
     val durationMs by viewmodel.playerManager.timeFullMillis.collectAsState()
+    val container = LocalWindowInfo.current.containerSize
+    val tall = container.height > container.width
 
     Box(modifier.windowInsetsPadding(WindowInsets.safeGestures)) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .zIndex(999f),
-        ) {
-            if (hasVideo) {
-                RoomSeekbar(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
-            }
+        if (tall) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .align(Alignment.BottomCenter)
+                    .zIndex(999f)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Start,
             ) {
                 if (hasVideo) {
-                    // Outlined play/pause key.
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.Black.copy(alpha = 0.35f))
-                            .border(1.dp, DD.line, RoundedCornerShape(12.dp))
-                            .clickable {
-                                viewmodel.dispatcher.controlPlayback(if (playing) Playback.PAUSE else Playback.PLAY, true)
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = if (playing) PauseGlyph else PlayGlyph,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                    RowGap(Space.gap)
-                    // The reaction pill.
-                    Row(
-                        Modifier
-                            .clip(DD.pillShape)
-                            .background(Color.Black.copy(alpha = 0.35f))
-                            .border(1.dp, DD.line, DD.pillShape)
-                            .padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        REACTIONS.forEach { emoji ->
-                            Text(
-                                text = emoji,
-                                style = Type.note.copy(fontSize = 14.sp),
-                                color = Color.White,
-                                modifier = Modifier
-                                    .padding(horizontal = 5.dp)
-                                    .clickable { viewmodel.dispatcher.sendMessage(emoji) },
-                            )
-                        }
-                    }
+                    PlayPauseKey(viewmodel, playing, small = true)
                     RowGap(Space.gap)
                     Text(
                         text = "${timestampFromMillis(positionMs)} / ${timestampFromMillis(durationMs)}",
@@ -120,11 +78,86 @@ fun RoomBottomBarSection(modifier: Modifier) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                if (hasVideo) {
-                    RoomControlPanelButton(modifier = Modifier)
-                }
                 RoomMediaAddButton()
             }
+        } else {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .zIndex(999f),
+            ) {
+                if (hasVideo) {
+                    RoomSeekbar(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp))
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Start,
+                ) {
+                    if (hasVideo) {
+                        PlayPauseKey(viewmodel, playing, small = false)
+                        RowGap(Space.gap)
+                        // The reaction pill.
+                        Row(
+                            Modifier
+                                .clip(DD.pillShape)
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .border(1.dp, DD.line, DD.pillShape)
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            REACTIONS.forEach { emoji ->
+                                Text(
+                                    text = emoji,
+                                    style = Type.note.copy(fontSize = 14.sp),
+                                    color = Color.White,
+                                    modifier = Modifier
+                                        .padding(horizontal = 5.dp)
+                                        .clickable { viewmodel.dispatcher.sendMessage(emoji) },
+                                )
+                            }
+                        }
+                        RowGap(Space.gap)
+                        Text(
+                            text = "${timestampFromMillis(positionMs)} / ${timestampFromMillis(durationMs)}",
+                            style = Type.value,
+                            color = Color.White,
+                            maxLines = 1,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (hasVideo) {
+                        RoomControlPanelButton(modifier = Modifier)
+                    }
+                    RoomMediaAddButton()
+                }
+            }
         }
+    }
+}
+
+/** The outlined play/pause key shared by both arrangements. */
+@Composable
+private fun PlayPauseKey(viewmodel: app.room.RoomViewmodel, playing: Boolean, small: Boolean) {
+    Box(
+        Modifier
+            .size(if (small) 36.dp else 40.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black.copy(alpha = 0.35f))
+            .border(1.dp, DD.line, RoundedCornerShape(12.dp))
+            .clickable {
+                viewmodel.dispatcher.controlPlayback(if (playing) Playback.PAUSE else Playback.PLAY, true)
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (playing) PauseGlyph else PlayGlyph,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(if (small) 16.dp else 18.dp),
+        )
     }
 }

@@ -404,13 +404,19 @@ private fun RoomHud(
             tall = tall,
             railHorizontal = railHorizontal,
             status = if (soloMode || !playerIsReady) null else ({ RoomStatusInfoSection() }),
-            rail = { RoomRail(horizontal = railHorizontal) },
+            // Portrait keeps only the picture, its status line and the chat; the rail and the
+            // big centre transport belong to the landscape arrangement.
+            rail = if (tall) null else { RoomRail(horizontal = railHorizontal) },
             chat = if (soloMode) null else ({ RoomChatSection(modifier = Modifier.fillMaxSize()) }),
             // Room creation waits for the previous engine's teardown. Until it publishes
             // the new player, keep chat/navigation usable but do not compose player tools.
             side = if (playerIsReady) ({ RoomSidePanels(Modifier.fillMaxSize(), tall = tall) }) else null,
             bottom = if (playerIsReady) ({ RoomBottomBarSection(modifier = Modifier.fillMaxWidth()) }) else null,
-            center = { if (playerIsReady) RoomTransportKeys() else ProgressBar(progress = null) },
+            center = if (tall) {
+                { if (!playerIsReady) ProgressBar(progress = null) }
+            } else {
+                { if (playerIsReady) RoomTransportKeys() else ProgressBar(progress = null) }
+            },
         )
     }
     }
