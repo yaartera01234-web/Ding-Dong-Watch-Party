@@ -41,6 +41,9 @@ import app.theme.Type
 import app.theme.palette
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Brush
+import app.theme.DD
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -100,7 +103,14 @@ fun MessageRow(
                     Modifier
                         .padding(vertical = 3.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0xFF1B1228))
+                        .background(
+                            if (message.isMainUser) {
+                                Brush.linearGradient(listOf(DD.pink.copy(0.18f), DD.violet.copy(0.18f)))
+                            } else {
+                                Brush.linearGradient(listOf(Color(0xFF1B1228), Color(0xFF1B1228)))
+                            },
+                            RoundedCornerShape(14.dp),
+                        )
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 } else {
                     Modifier.padding(vertical = 2.dp)
@@ -182,6 +192,7 @@ fun MessageRow(
             }
             }
         } else {
+            if (carded) DPAvatar(message.sender ?: "?")
             Column(Modifier.weight(1f)) {
                 if (!grouped) {
                     OutlinedText(
@@ -262,5 +273,26 @@ private fun OutlinedText(
             Text(text, style = base.copy(color = Color.Black, drawStyle = Stroke(width = outline, join = StrokeJoin.Round)))
         }
         Text(text, style = base.copy(color = color))
+    }
+}
+
+/** A tiny generated DP: a gradient disc carrying the sender's initial. */
+@Composable
+private fun DPAvatar(name: String) {
+    val stops = when ((name.hashCode().and(0x7fffffff)) % 4) {
+        0 -> listOf(DD.pink, DD.violet)
+        1 -> listOf(DD.orchid, DD.pink)
+        2 -> listOf(DD.violet, DD.orchid)
+        else -> listOf(Color(0xFF3DDC84), DD.violet)
+    }
+    Box(
+        Modifier
+            .padding(end = 8.dp, top = 2.dp)
+            .size(28.dp)
+            .clip(CircleShape)
+            .background(Brush.linearGradient(stops), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(name.firstOrNull()?.uppercase() ?: "?", style = Type.value, color = Color.White)
     }
 }

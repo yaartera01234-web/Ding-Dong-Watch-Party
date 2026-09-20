@@ -82,6 +82,6 @@ data class Message(
         get() = TRUSTED_IMAGE_HOSTS.any { imageHost == it || imageHost.endsWith(".$it") }
 
     companion object {
-        private val TRUSTED_IMAGE_HOSTS = listOf("klipy.com", "klipy.co")
+        private val TRUSTED_IMAGE_HOSTS = listOf("klipy.com", "klipy.co", "giphy.com")
     }
 }

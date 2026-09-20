@@ -62,6 +62,14 @@ import app.room.ui.statinfo.RoomStatusInfoSection
 import app.room.ui.tabs.ManagedRoomModal
 import app.room.ui.tabs.RoomRail
 import app.room.ui.tabs.RoomUnlockableLayout
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.height
+import app.theme.DD
+import app.theme.DDAmbient
+import app.room.ui.misc.EMOJI_REACTIONS
+import app.room.ui.misc.FloatingReactionOverlay
+import app.room.ui.misc.ReactionBus
 import app.theme.LocalPalette
 import app.theme.Motion
 import app.theme.Space
@@ -140,11 +148,17 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
     ) {
         // Portrait phones keep the picture as a top mini player; the chat owns the rest.
         val videoArea = if (tall) {
-            Modifier.fillMaxWidth().fillMaxHeight(0.40f)
+            Modifier
+                .padding(start = 12.dp, end = 12.dp, top = 10.dp)
+                .fillMaxWidth()
+                .fillMaxHeight(0.40f)
+                .clip(RoundedCornerShape(22.dp))
+                .border(1.dp, DD.violet.copy(alpha = 0.45f), RoundedCornerShape(22.dp))
         } else {
             Modifier.fillMaxSize()
         }
         Box(Modifier.fillMaxSize()) {
+            if (tall) DDAmbient()
             Box(Modifier.matchParentSize().glassBackdropLayer(roomHazeState)) {
                 if (!hasVideo) Box(Modifier.align(Alignment.TopCenter).then(videoArea)) { RoomBackgroundArtwork() }
 
@@ -171,6 +185,11 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
                             .background(Color(videoBackground)),
                         onPlayerReady = { platformCallback.mediaSessionInitialize(viewmodel) },
                     )
+                }
+                if (tall) {
+                    Box(Modifier.align(Alignment.TopCenter).then(videoArea)) {
+                        PortraitVideoChrome(viewmodel, hasVideo)
+                    }
                 }
             }
 
@@ -214,6 +233,11 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
         // someone in it, and only opens if this session has not seen a room yet.
         val firstRoom = remember { !globalViewmodel.hasEnteredRoomOnce }
         val roster by viewmodel.session.userList.collectAsState()
+        val msgTail by viewmodel.session.messageSequence.collectAsState()
+        LaunchedEffect(msgTail.lastOrNull()?.id) {
+            val c = msgTail.lastOrNull()?.content?.trim() ?: return@LaunchedEffect
+            if (c in EMOJI_REACTIONS) ReactionBus.spawn(c)
+        }
         // Coming back from fullscreen must not greet the mini screen with the roster.
         LaunchedEffect(tall) {
             if (tall) viewmodel.uiState.toggleUserInfo(false)
@@ -460,5 +484,34 @@ private fun HudAutoHide(viewmodel: RoomViewmodel, hudVisible: Boolean, keyboardO
     )
     LaunchedEffect(ui) {
         autoHideHud(snapshotFlow { state }) { ui.visibleHUD.value = it }
+    }
+}
+
+/** Portrait-only video chrome: the glowing gradient progress line and floating reactions. */
+@Composable
+private fun PortraitVideoChrome(viewmodel: RoomViewmodel, hasVideo: Boolean) {
+    val positionMs by viewmodel.playerManager.timeCurrentMillis.collectAsState()
+    val durationMs by viewmodel.playerManager.timeFullMillis.collectAsState()
+    Box(Modifier.fillMaxSize()) {
+        FloatingReactionOverlay()
+        if (hasVideo && durationMs > 0) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 10.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.White.copy(alpha = 0.12f)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth((positionMs.toFloat() / durationMs).coerceIn(0f, 1f))
+                        .background(DD.grad, RoundedCornerShape(4.dp)),
+                )
+            }
+        }
     }
 }

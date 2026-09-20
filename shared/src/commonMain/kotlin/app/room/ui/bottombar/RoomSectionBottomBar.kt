@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import app.LocalRoomViewmodel
+import app.room.ui.misc.ReactionBus
 import app.player.Playback
 import app.theme.DD
 import app.theme.Space
@@ -116,7 +117,10 @@ fun RoomBottomBarSection(modifier: Modifier) {
                                     color = Color.White,
                                     modifier = Modifier
                                         .padding(horizontal = 5.dp)
-                                        .clickable { viewmodel.dispatcher.sendMessage(emoji) },
+                                        .clickable {
+                                        viewmodel.dispatcher.sendMessage(emoji)
+                                        ReactionBus.spawn(emoji)
+                                    },
                                 )
                             }
                         }

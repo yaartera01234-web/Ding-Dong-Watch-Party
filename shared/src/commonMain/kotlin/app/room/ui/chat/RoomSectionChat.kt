@@ -124,6 +124,16 @@ fun RoomChatSection(modifier: Modifier) {
             }
 
             if (gifPanelVisible) {
+              if (SyncplayMobile.shared.KiteBuildConfig.KLIPY_API_KEY.isBlank()) {
+                DingDongGifGrid(
+                    onPick = { gifUrl ->
+                        viewmodel.dispatcher.sendMessage(gifUrl)
+                        viewmodel.uiState.msg.value = ""
+                        viewmodel.uiState.gifPanelVisible.value = false
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(cutoutInsets).padding(horizontal = 8.dp),
+                )
+              } else {
                 GifPanel(
                     query = msg,
                     onGifSelected = { gifUrl ->
@@ -137,6 +147,7 @@ fun RoomChatSection(modifier: Modifier) {
                         },
                     isHUDVisible = isHUDVisible,
                 )
+              }
             } else {
                 ChatBox(
                     viewmodel = viewmodel,
