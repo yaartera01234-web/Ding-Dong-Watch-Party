@@ -84,9 +84,9 @@ android {
 
     packaging {
         jniLibs.useLegacyPackaging = true
-        // LEGACY BUILD: jniLibs now ships our own libc++_shared.so next to the v0.23.0 mpv
-        // natives; if another AAR (media3 ffmpeg ext) brings one too, prefer ours.
-        jniLibs.pickFirsts += "**/libc++_shared.so"
+        // No pickFirst for libc++_shared.so any more: only the libmpvkt AAR ships one. If a
+        // second dependency ever brings its own, AGP fails the merge, and that is the moment to
+        // look at which copy is newer, not the moment to add a pickFirst.
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             pickFirsts += "META-INF/INDEX.LIST"
