@@ -104,7 +104,7 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
     val portrait = container.height > container.width
 
     /** The shared innards: dot, lock, room, state, reconnect, episode. */
-    val inner: @Composable () -> Unit = {
+    val inner: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {
         Box(Modifier.size(6.dp).background(square, Radius.tightShape))
         if (connectionState == ConnectionState.CONNECTED) {
             RowGap(Space.gapTight)
