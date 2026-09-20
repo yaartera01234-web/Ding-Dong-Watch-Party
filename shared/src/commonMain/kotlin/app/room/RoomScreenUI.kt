@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -149,7 +150,7 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
     ) {
         // Portrait phones keep the picture as a top mini player; the chat owns the rest.
         val videoArea = if (tall) {
-            Modifier.fillMaxWidth().fillMaxHeight(0.40f)
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f)
         } else {
             Modifier.fillMaxSize()
         }

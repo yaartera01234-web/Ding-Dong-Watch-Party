@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -64,6 +65,9 @@ fun RoomFrame(
     val transport = Space.rowTall + Space.gapTight
     val density = LocalDensity.current
     var railWidth by remember { mutableStateOf(0.dp) }
+    // Portrait stacks a 16:9 mini player, the chip row under it, then the chat: no wasted
+    // letterbox band, and nothing floats over the picture.
+    val miniVideoHeight = with(density) { LocalWindowInfo.current.containerSize.width.toDp() } * 9f / 16f
 
     Box(modifier.fillMaxSize()) {
         if (rail != null) {
@@ -81,8 +85,8 @@ fun RoomFrame(
         if (status != null) {
             Box(
                 Modifier.align(Alignment.TopCenter).focusGroup()
-                    .windowInsetsPadding(topInsets)
-                    .padding(top = if (tall) Space.row + Space.gap else Space.gapTight)
+                    .then(if (tall) Modifier else Modifier.windowInsetsPadding(topInsets))
+                    .padding(top = if (tall) miniVideoHeight + 4.dp else Space.gapTight)
                     .then(
                         if (tall) Modifier.fillMaxWidth().padding(horizontal = Space.gapTight)
                         else Modifier.fillMaxWidth(0.26f)
@@ -95,9 +99,9 @@ fun RoomFrame(
                 Modifier.focusGroup()
                     .then(
                         if (tall) {
-                            Modifier.align(Alignment.BottomStart)
-                                .fillMaxWidth()
-                                .fillMaxHeight(0.60f)
+                            Modifier.align(Alignment.TopStart)
+                                .fillMaxSize()
+                                .padding(top = miniVideoHeight + Space.row + Space.gap)
                                 .windowInsetsPadding(bottomInsets)
                         } else {
                             Modifier.align(Alignment.TopStart)
