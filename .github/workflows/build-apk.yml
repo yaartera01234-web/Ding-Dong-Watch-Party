@@ -22,13 +22,17 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
+
+      - name: Show SDK location
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          which sdkmanager || ls /usr/local/lib/android/sdk/cmdline-tools/*/bin/sdkmanager
 
       - name: Accept SDK licenses
         run: |
-          yes | sdkmanager --licenses > /dev/null
+          yes | sdkmanager --licenses > /dev/null || true
 
       - name: Install required SDK packages
         run: |
