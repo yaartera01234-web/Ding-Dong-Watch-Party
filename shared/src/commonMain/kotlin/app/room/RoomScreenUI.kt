@@ -30,6 +30,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
@@ -150,7 +155,10 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
     ) {
         // Portrait phones keep the picture as a top mini player; the chat owns the rest.
         val videoArea = if (tall) {
-            Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
         } else {
             Modifier.fillMaxSize()
         }
@@ -491,6 +499,22 @@ private fun PortraitVideoChrome(viewmodel: RoomViewmodel, hasVideo: Boolean) {
     val durationMs by viewmodel.playerManager.timeFullMillis.collectAsState()
     Box(Modifier.fillMaxSize()) {
         FloatingReactionOverlay()
+        // The breathing brand line at the picture's foot.
+        val breathe = rememberInfiniteTransition(label = "edge")
+        val edgeAlpha by breathe.animateFloat(
+            initialValue = 0.55f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1700), repeatMode = RepeatMode.Reverse),
+            label = "edgeAlpha",
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(3.dp)
+                .graphicsLayer { alpha = edgeAlpha }
+                .background(DD.grad),
+        )
         if (hasVideo && durationMs > 0) {
             Box(
                 Modifier

@@ -230,7 +230,9 @@ class MPVView(context: Context, attrs: AttributeSet) : FrameLayout(context, attr
         // handed to the new core instead. Only a change of glass setting, which needs the other
         // kind of view, rebuilds anything.
         val existing = surfaceChild
-        val wantsTexture = glassEnabledNow()
+        // Ding Dong always draws into a TextureView: the picture then lives inside the
+        // window layer, so the mini player can clip it to rounded corners and carry glows.
+        val wantsTexture = true
         val rightKind = (existing is TextureView && wantsTexture) || (existing is SurfaceView && !wantsTexture)
         if (existing != null && rightKind) {
             mpvSurface?.takeIf { it.isValid }?.let { surface ->
