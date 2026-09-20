@@ -1,7 +1,6 @@
 package app.room.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -42,6 +41,7 @@ import app.theme.Type
 import app.theme.palette
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import app.LocalRoomViewmodel
 import app.utils.platformCallback
@@ -93,26 +93,36 @@ fun MessageRow(
             .fillMaxWidth()
             .padding(vertical = 2.dp)
             // Swipe horizontally across a line to quote it in the composer (Ding Dong swipe-reply).
-            // Only user lines can be replied to; system/event lines carry no sender.
+            // Only user lines can be replied to; system/event lines carry no sender. Observes the
+            // pointer without consuming, so vertical chat scrolling is untouched.
             .let { m ->
                 if (message.sender != null && onSwipeToReply != null) {
                     m.pointerInput(message.id) {
-                        var totalX = 0f
-                        var fired = false
-                        detectDragGestures(
-                            onHorizontalDrag = { changedX, _ ->
-                                // Accumulate: each callback carries only the per-frame delta.
-                                totalX += changedX
-                                if (!fired && abs(totalX) > 48f) {
-                                    fired = true
-                                    onSwipeToReply()
+                        awaitPointerEventScope {
+                            var startX: Float? = null
+                            var fired = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull() ?: continue
+                                when (change.type) {
+                                    PointerEventType.Press -> {
+                                        startX = change.position.x
+                                        fired = false
+                                    }
+                                    PointerEventType.Move -> {
+                                        val sx = startX ?: continue
+                                        if (!fired && abs(change.position.x - sx) > 48f) {
+                                            fired = true
+                                            onSwipeToReply()
+                                        }
+                                    }
+                                    else -> {
+                                        startX = null
+                                        fired = false
+                                    }
                                 }
-                                true
-                            },
-                            onVerticalDrag = { _, _ -> false },
-                            onDragEnd = { totalX = 0f; fired = false },
-                            onDragCancel = { totalX = 0f; fired = false },
-                        )
+                            }
+                        }
                     }
                 } else m
             }
