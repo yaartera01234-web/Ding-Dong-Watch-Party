@@ -41,7 +41,10 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk "DingDong-Android-v${{ github.run_number }}.apk"
+          find androidApp/build/outputs/apk -name "*.apk" -type f
+          APK=$(find androidApp/build/outputs/apk -name "*.apk" -type f | head -1)
+          test -n "$APK" || { echo "No APK produced!"; exit 1; }
+          cp "$APK" "DingDong-Android-v${{ github.run_number }}.apk"
           ls -la *.apk
 
       - name: Upload artifact
@@ -58,3 +61,4 @@ jobs:
           files: DingDong-Android-v${{ github.run_number }}.apk
           draft: false
           prerelease: false
+          
