@@ -214,6 +214,10 @@ fun RoomScreenUI(viewmodel: RoomViewmodel) {
         // someone in it, and only opens if this session has not seen a room yet.
         val firstRoom = remember { !globalViewmodel.hasEnteredRoomOnce }
         val roster by viewmodel.session.userList.collectAsState()
+        // Coming back from fullscreen must not greet the mini screen with the roster.
+        LaunchedEffect(tall) {
+            if (tall) viewmodel.uiState.toggleUserInfo(false)
+        }
         LaunchedEffect(firstRoom, soloMode, roster.isNotEmpty(), tall) {
             globalViewmodel.hasEnteredRoomOnce = true
             // Portrait keeps its clean mini look; the roster pops only in landscape.

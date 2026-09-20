@@ -83,7 +83,10 @@ fun RoomFrame(
                 Modifier.align(Alignment.TopCenter).focusGroup()
                     .windowInsetsPadding(topInsets)
                     .padding(top = if (tall) Space.row + Space.gap else Space.gapTight)
-                    .then(if (tall) Modifier.fillMaxWidth(0.6f) else Modifier.fillMaxWidth(0.26f)),
+                    .then(
+                        if (tall) Modifier.fillMaxWidth().padding(horizontal = Space.gapTight)
+                        else Modifier.fillMaxWidth(0.26f)
+                    ),
                 contentAlignment = Alignment.TopCenter,
             ) { status() }
         }

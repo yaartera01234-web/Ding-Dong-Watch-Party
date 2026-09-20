@@ -103,6 +103,9 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
 
     Row(
         modifier = modifier
+            // Portrait stretches the line so the chip stays left and the Fullscreen key
+            // parks in the right-hand corner, like the design shot.
+            .then(if (portrait) Modifier.fillMaxWidth() else Modifier)
             // Connection changes are read out as they happen.
             .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
             .chromeSurface(Radius.panelShape)
