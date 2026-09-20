@@ -104,12 +104,13 @@ fun MessageRow(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull() ?: continue
-                                when (change.type) {
+                                when (event.type) {
                                     PointerEventType.Press -> {
                                         startX = change.position.x
                                         fired = false
                                     }
                                     PointerEventType.Move -> {
+                                        if (!change.pressed) continue
                                         val sx = startX ?: continue
                                         if (!fired && abs(change.position.x - sx) > 48f) {
                                             fired = true
