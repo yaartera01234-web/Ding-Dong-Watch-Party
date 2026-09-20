@@ -292,10 +292,11 @@ kotlin {
             /* ExoPlayer's FFmpeg-powered audio renderer extension (this does not need to be updated with every media3 release)  */
             implementation(files(File(projectDir, "libs/libffmpeg_media3exo_1.8.0.aar")))
 
-            /* libmpv for Android, prebuilt by libmpvKt (mpv, FFmpeg, libass and libplacebo), with its
-             * typed API and the view that hosts the video. The exoOnly flavor keeps both so the engine
-             * code compiles; androidApp strips every native library they bring at packaging time. */
-            implementation(libs.libmpvkt)
+            /* LEGACY ENGINE BUILD: old mpv-android-lib (mpv 0.3x generation) for old devices that
+             * crash with the new libmpvKt engine. The app talks to it through the LegacyMpvLib shim
+             * (app.player.mpv.MPVLib). Revert this line to implementation(libs.libmpvkt) for the
+             * regular new-engine build. */
+            implementation("io.github.abdallahmehiz:mpv-android-lib:0.1.12")
 
             /* YT/SoundCloud/PeerTube stream URL extractor (no Python, pure JVM) */
             implementation(libs.newpipe.extractor)

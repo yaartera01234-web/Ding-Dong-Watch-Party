@@ -35,7 +35,6 @@ import app.room.RoomViewmodel
 import app.utils.playableUri
 import app.utils.uri
 import io.github.vinceglb.filekit.PlatformFile
-import io.github.yuroyami.libmpvkt.MPVLib
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -59,12 +58,12 @@ class MpvImpl(vm: RoomViewmodel) : PlayerImpl(vm, MpvEngine) {
 
         copyAssets(ctx)
 
-        // A recreated view means a new surface for a core that already exists. libmpv's handle
-        // is process-global, so the only clean way to rehost it is the same destroy-then-create
-        // every file load already does; a second create over a live core aborts.
+        // LEGACY ENGINE: one core per process. Destroying and recreating the core kills the JNI
+        // event thread bound to the first core (video keeps playing but pause/duration events die
+        // forever). A live core just gets re-observed and re-surfaced; new files go through
+        // loadfile in playFile().
         if (isInitialized) {
             removeObserver()
-            MPVLib.destroy()
         }
         mpvView.initialize(ctx.filesDir.path, ctx.cacheDir.path)
         // The gain rung: mpv clamps volume at 130 by default.
@@ -276,18 +275,24 @@ class MpvImpl(vm: RoomViewmodel) : PlayerImpl(vm, MpvEngine) {
     override suspend fun injectVideoFileImpl(location: MediaFileLocation.Local) {
         installMpvSubfontIfNeeded()
         ctx.resolveUri(location.file.uri)?.let {
-            if (isInitialized) MPVLib.destroy()
-            mpvView.initialize(ctx.filesDir.path, ctx.cacheDir.path)
-            mpvObserverAttach()
+            // LEGACY: live core switches files through loadfile; never destroy/recreate.
+            if (!isInitialized) {
+                mpvView.initialize(ctx.filesDir.path, ctx.cacheDir.path)
+                mpvObserverAttach()
+                isInitialized = true
+            }
             mpvView.playFile(it)
         }
     }
 
     override suspend fun injectVideoURLImpl(location: MediaFileLocation.Remote) {
         installMpvSubfontIfNeeded()
-        if (isInitialized) MPVLib.destroy()
-        mpvView.initialize(ctx.filesDir.path, ctx.cacheDir.path)
-        mpvObserverAttach()
+        // LEGACY: live core switches files through loadfile; never destroy/recreate.
+        if (!isInitialized) {
+            mpvView.initialize(ctx.filesDir.path, ctx.cacheDir.path)
+            mpvObserverAttach()
+            isInitialized = true
+        }
         mpvView.playFile(location.url)
     }
 
