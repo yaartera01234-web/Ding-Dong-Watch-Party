@@ -121,7 +121,7 @@ kiteConfig {
             providers.gradleProperty("debugProtocol").map(String::toBoolean).orElse(false),
         )
         booleanField("EXOPLAYER_ONLY", exoOnly)
-        stringField("KLIPY_API_KEY", localProperties.getProperty("yuroyami.keyKlipyApi") ?: "")
+        stringField("KLIPY_API_KEY", localProperties.getProperty("yuroyami.keyKlipyApi") ?: "M5BjLZtHJtX8pSM7bkwL9A1uTRIiWPceLRfb7TA7QHM9dDVmIXaQLSXk6UYgmI70")
         // A local OpenSubtitles client key can replace the legacy fallback.
         stringField(
             "OPENSUBTITLES_API_KEY",

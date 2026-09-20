@@ -3,11 +3,6 @@ package app.room.ui.statinfo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.launch
-import app.preferences.Preferences
-import app.preferences.set
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,43 +10,50 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import app.i18n.roomUserCount
-import app.i18n.strings
-import app.uicomponents.controls.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewModelScope
 import app.LocalRoomViewmodel
+import app.i18n.roomUserCount
+import app.i18n.strings
+import app.preferences.Preferences
+import app.preferences.set
 import app.protocol.models.ConnectionState
+import app.protocol.sync.AutoplayState
 import app.theme.Radius
 import app.theme.Space
 import app.theme.Type
 import app.theme.palette
 import app.uicomponents.chromeSurface
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
+import app.uicomponents.controls.GlyphButton
 import app.uicomponents.controls.Icon
 import app.uicomponents.controls.LockGlyph
-import app.uicomponents.controls.UnlockGlyph
-import app.uicomponents.controls.GlyphButton
 import app.uicomponents.controls.RowGap
 import app.uicomponents.controls.Tag
-import app.protocol.sync.AutoplayState
+import app.uicomponents.controls.Text
+import app.uicomponents.controls.UnlockGlyph
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import kotlinx.coroutines.launch
 
 private val EPISODE = Regex("(?:s|season)(\\d{1,2})(?:e|episode)(\\d{1,2})")
 
 /**
  * The status line: a 6dp connection square, the room name, the user count or the connection
- * state, and the episode tag when the file name carries one. Notices live elsewhere now.
+ * state, and the episode tag when the file name carries one. On portrait phones it splits into
+ * two floating glass chips hugging the corners, so the mini player stays clean; landscape keeps
+ * the single chrome pill.
  */
 @Composable
 fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
@@ -74,8 +76,6 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         ConnectionState.CONNECTING, ConnectionState.SCHEDULING_RECONNECT -> p.accent
         ConnectionState.DISCONNECTED -> p.bad
     }
-    /* Connected and idle, the line says who the room is waiting for. That is more useful than
-     * a head count, which the roster already shows. */
     val readinessLine: String? = when {
         connectionState != ConnectionState.CONNECTED -> null
         autoplay is AutoplayState.CountingDown ->
@@ -93,9 +93,6 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         ConnectionState.SCHEDULING_RECONNECT -> strings.roomReconnecting
         ConnectionState.DISCONNECTED -> strings.roomPingDisconnected
     }
-    // Portrait phones get the Fullscreen key at the end of the line, like the design shot.
-    val container = LocalWindowInfo.current.containerSize
-    val portrait = container.height > container.width
     val media by viewmodel.playerManager.media.collectAsState()
     val episode = remember(media?.fileName) {
         media?.fileName?.lowercase()?.let { EPISODE.find(it) }?.let { m ->
@@ -103,20 +100,12 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         }
     }
 
-    Row(
-        modifier = modifier
-            // Portrait stretches the line so the chip stays left and the Fullscreen key
-            // parks in the right-hand corner, like the design shot.
-            .then(if (portrait) Modifier.fillMaxWidth() else Modifier)
-            // Connection changes are read out as they happen.
-            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
-            .chromeSurface(Radius.panelShape)
-            .heightIn(min = Space.rowCompact)
-            .padding(horizontal = Space.gap),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    val container = LocalWindowInfo.current.containerSize
+    val portrait = container.height > container.width
+
+    /** The shared innards: dot, lock, room, state, reconnect, episode. */
+    val inner: @Composable () -> Unit = {
         Box(Modifier.size(6.dp).background(square, Radius.tightShape))
-        // Whether anyone between you and the server can read the room, said plainly.
         if (connectionState == ConnectionState.CONNECTED) {
             RowGap(Space.gapTight)
             Icon(
@@ -138,8 +127,6 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
         )
         RowGap(Space.gapTight + 2.dp)
         Text(state, style = Type.value, color = p.inkDim, maxLines = 1)
-        // Waiting out the backoff is the common case, but a user who knows the server just came
-        // back should not have to leave the room to try again.
         if (connectionState == ConnectionState.DISCONNECTED || connectionState == ConnectionState.SCHEDULING_RECONNECT) {
             RowGap(Space.gapTight)
             GlyphButton(
@@ -153,18 +140,46 @@ fun RoomStatusInfoSection(modifier: Modifier = Modifier) {
             RowGap(Space.gapTight + 2.dp)
             Tag(episode)
         }
-        if (portrait) {
+    }
+
+    if (portrait) {
+        // Two floating glass chips in the corners; the picture between them stays untouched.
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                .padding(horizontal = Space.gapTight),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                Modifier
+                    .chromeSurface(Radius.panelShape)
+                    .heightIn(min = Space.rowCompact)
+                    .padding(horizontal = Space.gap),
+                verticalAlignment = Alignment.CenterVertically,
+            ) { inner() }
             Spacer(Modifier.weight(1f))
             Box(
                 Modifier
-                    .clip(Radius.panelShape)
-                    .border(Space.hair, p.rule, Radius.panelShape)
+                    .chromeSurface(Radius.panelShape)
+                    .heightIn(min = Space.rowCompact)
                     .clickable { viewmodel.viewModelScope.launch { Preferences.ROOM_ALLOW_PORTRAIT.set(false) } }
-                    .padding(horizontal = Space.gap, vertical = 3.dp),
+                    .padding(horizontal = Space.gap),
+                contentAlignment = Alignment.Center,
             ) {
                 Text("Fullscreen ⛶", style = Type.value, color = p.ink)
             }
-        } else {
+        }
+    } else {
+        Row(
+            modifier = modifier
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }
+                .chromeSurface(Radius.panelShape)
+                .heightIn(min = Space.rowCompact)
+                .padding(horizontal = Space.gap),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            inner()
             RowGap(Space.gapTight)
             Box(
                 Modifier
